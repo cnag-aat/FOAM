@@ -1,0 +1,20 @@
+
+
+Downloaded latest reference sequence sets from https://zenodo.org/record/2672835
+
+Reference data for MITOS2
+============================
+
+Matthias Bernt; Frank Jühling; Alexander Donath; Abdullah H. Sahyoun; Manja Marz; Peter F. Stadler; Martin Middendorf
+
+Dowload and uncompress reference data for MITOS2 derived from RefSeq81 for Metazoa (m), Fungi (f), and Opisthokonta (o).
+
+Contains
+
+- fasta databases for the BLAST searches
+
+- automatically derived covariance models for RNA searches
+
+- for refseq63m hidden markov models for protein prediction (http://dx.doi.org/10.1016/j.ympev.2016.09.024)
+
+ 
