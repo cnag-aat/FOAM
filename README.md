@@ -5,7 +5,7 @@ FOAM (Flye ONT Assembly of Mitogenomes). Is a pipeline we have been using to ass
 Version 0.5 is available and the different upgrades are shown in the corresponding tag.
 
 # Taxonomic range 
-FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It has been successful across different taxa including insects, sponges, archnids and vertebrates. Previous versions were used in various genomes see the publications below.
+FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It has been successful across different taxa including insects, sponges, archnids and vertebrates. Previous versions were used in various genomes, see some the publications below.
 
 # Workflow
 FOAM Snakemake rulegraph summarizing all the steps.
