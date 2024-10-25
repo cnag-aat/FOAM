@@ -1,0 +1,21 @@
+data:
+  reference_fasta: /scratch_isilon/groups/assembly/data/projects/BGE/ibLobCana/assembly/mitogenome/data/reference/Blattella_germanica_MT.fasta
+  ont: /scratch_isilon/groups/assembly/data/projects/BGE/ibLobCana/assembly/mitogenome/data/ont/reads.ont.fastq.gz
+parameters:
+  max_read_length: 18000
+  ontfilter_minmatch: 5000
+  ontfilter_minq: 15
+  minimap2_opts: " -ax map-hifi"
+  flye_opts: " --meta --scaffold -i 1"
+  flye_reads: " --nano-hq"
+  polishing_flye: "-i 1"
+  reference_length: 15025
+  mito_length_variation: 2000
+  tolid: ibLobCana
+annotation:
+  genetic_code: 5
+  mitos_options: " --linear --best"
+  refseq_database : refseq81m
+
+
+

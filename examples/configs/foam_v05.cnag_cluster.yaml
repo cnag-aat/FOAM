@@ -1,0 +1,66 @@
+{
+  "format_mito_ref": {
+    "name": "{rule}_mitogenome",
+    "qos": "normal",
+    "time": "01:00:00",
+    "queue": "general",
+    "threads": 4
+  },
+  "filter_ont_max_len": {
+    "name": "{rule}_mitogenome",
+    "qos": "short",
+    "time": "02:00:00",
+    "queue": "general",
+    "mem": "10G",
+    "threads": 4
+  },    
+  "align_ont_to_mitoref": {
+    "name": "{rule}_mitogenome",
+    "qos": "vlong",
+    "time": "2-00:00:00",
+    "queue": "general",
+    "mem": "350G",
+    "threads": 128
+  },  
+  "flye_assembly_meta": {
+    "name": "{rule}_mitogenome",
+    "qos": "normal",
+    "time": "12:00:00",
+    "queue": "general",
+    "mem": "100G",
+    "threads": 16
+  },
+ "orient_circular_contig": {
+    "name": "{rule}_mitogenome",
+    "qos": "short",
+    "time": "02:00:00",
+    "queue": "general",
+    "mem": "12G",
+    "threads": 2
+  },
+  "orient_reference_MT": {
+    "name": "{rule}_mitogenome",
+    "qos": "short",
+    "time": "02:00:00",
+    "queue": "general",
+    "mem": "12G",
+    "threads": 2
+  },
+  "flye_polishing": {
+    "name": "{rule}_mitogenome",
+    "qos": "normal",
+    "time": "12:00:00",
+    "queue": "general",
+    "mem": "100G",
+    "threads": 16
+  },
+  "final_mitogenome": {
+    "name": "{rule}",
+    "qos": "short",
+    "time": "2:00:00",
+    "queue": "general",
+    "mem": "30G",
+    "threads": 16
+  }
+  
+}

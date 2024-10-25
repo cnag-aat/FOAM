@@ -1,0 +1,18 @@
+data:
+  reference_fasta: /scratch_isilon/groups/assembly/data/projects/BGE/mMarFoi/data/reference/mitogenome/mMarMar1_MT.fasta
+  ont: /scratch_isilon/groups/assembly/data/projects/BGE/mMarFoi/assembly/asm1/mitogenome/data/ont/reads.ont.fastq.gz
+parameters:
+  max_read_length: 18000
+  ontfilter_minmatch: 12000
+  ontfilter_minq: 15
+  minimap2_opts: " -ax map-ont"
+  flye_opts: " --meta --scaffold -i 1"
+  flye_reads: " --nano-raw"
+  polishing_flye: "-i 1"
+  reference_length: 16572
+  mito_length_variation: 2000
+  tolid: mMarFoi
+annotation:
+  genetic_code: 2
+  mitos_options: " --linear --best"
+  refseq_database : refseq81m
