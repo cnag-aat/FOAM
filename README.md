@@ -7,6 +7,11 @@ Version 0.5 is available and the different upgrades are shown in the correspondi
 # Taxonomic range 
 FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It has been successful across different taxa including insects,sponges, archnids and vertebrates. Previous versions were used in various genomes see the publications below.
 
+# Workflow
+FOAM Snakemake rulegraph summarizing all the steps.
+
+![mCriCri2_foam_v05](https://github.com/user-attachments/assets/bab92e6a-a36b-4f98-a62d-25882be2a4fe)
+
 # To make it run
 1. Clone this repository.
 2. Download the refseq81 databases from https://zenodo.org/records/2672835
@@ -17,10 +22,10 @@ FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It h
 
 # Config and key parameters
 
-  - **Reference Length:** set the right length for the reference genome used, example reference_length: 15025 for NC_012901 (i.e. Blattella germanica used as reference for Loboptera ibLobCana)
+  - **Reference Length:** Set the right length for the reference genome used, example reference_length: 15025 for NC_012901 (i.e. Blattella germanica used as reference for Loboptera ibLobCana)
 
-  - **Genetic Code:** chose the appropriate genetic code: 2 for Vertebrate 5 for Invertebrate (check code in Genetic_Code_Mitos.txt placed in the utils/ folder)
-  - As v0.5 expects ONT Q20+ reads or hifi reads, it will no longer use Illumina data for polishing. Therefore mapping and assembly options below should work for most species:
+  - **Genetic Code:** Chose the appropriate genetic code: 2 for Vertebrate 5 for Invertebrate (check code in Genetic_Code_Mitos.txt placed in the utils/ folder)
+  - **Mapping and Assembly** As v0.5 expects ONT Q20+ reads or hifi reads, it will no longer use Illumina data for polishing. Therefore mapping and assembly options below are adapted to long reads of high accuracy. These values should work for most species:
 
 	parameters:
 		max_read_length: 18000
@@ -30,9 +35,10 @@ FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It h
 		flye_opts: " --meta --scaffold -i 1"
 		flye_reads: " --nano-hq"
 		polishing_flye: "-i 1"
+                mito_length_variation: 2000
+                tolid: ibLobCana
 
-Flye polishing iterations. 
-
+     One of the key parameters to tweak is _ontfilter_minmatch:_ depending on the coverage this could be increased to ensure detection of reads with high identity to the reference and therefore a proper circularization of the contig. For example, we had to run it on mMarFoi with a higher value (i.e. 12,000) to obtain a circular contig of the expected size +- 2,000 bp
 
 # Contributors
 Fernando Cruz, Jèssica Gómez-Garrido and Tyler Alioto. Genome Assembly and Annotation Team (CNAG).
