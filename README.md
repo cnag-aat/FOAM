@@ -17,7 +17,7 @@ FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It h
 
 # Config and key parameters
 
-  - reference_length: set the right length for the reference genome used, example reference_length: 15025 for NC_012901 (i.e. Blattella germanica used as reference for Loboptera ibLobCana)
+  - **Reference Length:** set the right length for the reference genome used, example reference_length: 15025 for NC_012901 (i.e. Blattella germanica used as reference for Loboptera ibLobCana)
 
   - Chose the appropriate genetic code: 2 for Vertebrate 5 for Invertebrate (check code in Genetic_Code_Mitos.txt placed in the utils/ folder)
   - As v0.5 expects ONT Q20+ reads or hifi reads, it will no longer use Illumina data for polishing. Therefore mapping and assembly options below should work for most species:
