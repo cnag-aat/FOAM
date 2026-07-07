@@ -38,7 +38,7 @@ FOAM Snakemake rulegraph summarizing all the steps.
                 mito_length_variation: 2000
                 tolid: ibLobCana
 
-     Key parameters to tweak are _ontfilter_minmatch_ and _ontfilter_minq_: depending on the coverage and divergence to the reference, they could be increased to ensure detection of reads  larger and/or more unique alignments to the reference and therefore a proper circularization of the contig. For example, we had to run it on mMarFoi with a higher value (i.e. 12,000) to obtain a circular contig of the expected size +- 2,000 bp
+     Key parameters to tweak are _ontfilter_minmatch_ and _ontfilter_minq_: depending on the coverage and divergence to the reference, they could be increased to ensure detection of reads with larger and/or more unique alignments to the reference. Therefore, this can ensure a proper circularization of the contig. For example, we had to run it on mMarFoi with a higher value (i.e. 12,000) to obtain a circular contig of the expected size +- 2,000 bp
 
 # Contributors
 Fernando Cruz, Jèssica Gómez-Garrido and Tyler Alioto. Genome Assembly and Annotation Team (CNAG).
