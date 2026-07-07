@@ -118,7 +118,8 @@ rule align_ont_to_mitoref:
     ont_mito_fq = work_dir + "s03.1_p02.1_map_long_reads/ont_mito.fastq"
   params:
     align_opts = config["parameters"]["minimap2_opts"],
-    tmp = work_dir + "tmp/minimap2.sam",
+    tmp = work_dir + "tmp/minimap2.paf",
+    read_list = work_dir +  "tmp/mito_readids.txt",
     scripts = scripts_dir,
     min_match = config["parameters"]["ontfilter_minmatch"],
     min_qual = config["parameters"]["ontfilter_minq"],
@@ -137,12 +138,14 @@ rule align_ont_to_mitoref:
     "echo \"mitochondrial reference name is $REFNAME\";"
 
     # pipe to get a sam with the aligned reads to the mitogenome reference calling the md tag
-    "minimap2 {params.align_opts} -t {threads} {input.genome} {input.reads} | samtools calmd -S - {input.genome} > {params.tmp};" # specify the output sam is now in the tmpdir
-
+   # "minimap2 {params.align_opts} -t {threads} {input.genome} {input.reads} | samtools calmd -S - {input.genome} > {params.tmp};" # specify the output sam is now in the tmpdir
+     "minimap2 {params.align_opts} -t {threads} {input.genome} {input.reads}  > {params.tmp};"
+    "cat {params.tmp} | awk '$11 >= {params.min_match} && $12>={params.min_qual}' | cut -f 1 | sort -u > {params.read_list};"
+     "zcat {input.reads} | {params.scripts}filter_reads.pl -l {params.read_list} -a > {output.ont_mito_fq};"
     # CAPTURE READS 1. Using defaults here. my $minmatch = 800 (hard-coded in perl-script) and $minqual = 12 (parameter in perlscript) 
-    "perl --version ;"
-    "ls -l {params.scripts}sam_id_filter_v02.pl ;"
-    "{params.scripts}sam_id_filter_v02.pl -ref $REFNAME -m {params.min_match} -q {params.min_qual} <  {params.tmp} > ont.clean.fastq 2> {output.ont_mito_fq} ;"
+  #  "perl --version ;"
+  #  "ls -l {params.scripts}sam_id_filter_v02.pl ;"
+  #  "{params.scripts}sam_id_filter_v02.pl -ref $REFNAME -m {params.min_match} -q {params.min_qual} <  {params.tmp} > ont.clean.fastq 2> {output.ont_mito_fq} ;"
     
 rule flye_assembly_meta:
   input:
