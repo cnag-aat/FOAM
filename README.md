@@ -2,7 +2,7 @@
 FOAM (Flye ONT Assembly of Mitogenomes). Is a pipeline we have been using to assemble the complete circular mitogenome of different organisms. Although previous versions used a combination of Illumina and ONT reads, due to the increased accuracy of the latest we are only using ONT Q20+ reads. Keep in mind that as each genome and sample poses different challenges is in continuous development.
 
 # Current release
-Version 0.6 is now available. You can look for previous releases using the corresponding tag.
+Version 0.7 is now available. You can look for previous releases using the corresponding tag.
 
 # Taxonomic range 
 FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It has been successful across different taxa including insects, sponges, archnids and vertebrates. Previous versions were used in various genomes, see some the publications below.
