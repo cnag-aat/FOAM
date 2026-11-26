@@ -8,24 +8,58 @@ challenges, so FOAM is under continuous development.
 ## What it does
 
 ```
- mode: reads     bait ─▶ fish reads ─▶ flye ─▶ candidates ─▶ annotate* ─▶ polish ─▶ annotate* ─▶ final
- mode: flye      flye contig(s) ─▶ candidates ─▶ fish reads (contigs = bait) ─▶ annotate* ─▶ polish ─▶ annotate* ─▶ final
+ mode: reads     pass 1: seed ─▶ candidate reads ─▶ select reads ─▶ flye ─▶ candidates ─▶ annotate* (draft)
+                 pass 2: own draft as bait ─▶ candidate reads ─▶ select reads ─▶ flye ─▶ candidates ─▶ annotate*
+                 ─▶ polish ─▶ annotate* ─▶ final
+ mode: flye      flye contig(s) = bait ─▶ candidate reads ─▶ select reads ─▶ annotate* ─▶ polish ─▶ annotate* ─▶ final
  mode: hifiasm   hifiasm contig(s) / whole assembly ─▶ candidates ─▶ annotate* ─▶ final   (no reads, no polishing)
 
  annotate* = split tandem copies ─▶ MITOS2 on each unique copy ─▶ repair annotation
              ─▶ keep the most complete copy ─▶ rotate/reverse-complement to the start gene
 ```
 
-* **Bait.** Give a related mitogenome, or a taxid. With a taxid, FOAM walks up
-  the NCBI taxonomy (species → genus → family → order) and takes up to three
-  complete mitogenomes, preferring RefSeq. This is the former
-  `get_closest_mitogenome.py`, now `bin/foam.py fetch-bait`.
-* **Read fishing.** Reads are streamed through `minimap2` against the bait
-  concatenated with itself (so reads crossing the bait's linearisation point
-  align end-to-end). A read is kept only if its alignments cover ≥ 80 % of
-  it, so nuclear reads that merely contain a NUMT are dropped. Only the read
-  IDs and the selected reads are written: the full read set is never
-  rewritten.
+### Read fishing
+
+Fishing is built to depend as little as possible on fixed identity or length
+cut-offs, or on how close a relative's mitogenome is.
+
+* **Seed (first pass)**, set by `fishing.seed`:
+  * `bait`: a related mitogenome, given directly or fetched by taxid. FOAM
+    walks up the NCBI taxonomy (species → genus → family → order) and takes
+    up to three complete mitogenomes, preferring RefSeq.
+  * `genes`: conserved mitochondrial proteins (cox1–3, cob, nad1, nad4, nad5)
+    from the MITOS reference set, searched with frameshift-aware
+    `diamond blastx`. No related mitogenome is needed, and gene order and
+    control-region differences don't matter.
+  * `auto` (default): `bait` when a bait or taxid is given, `genes`
+    otherwise.
+* **Candidate reads.** One streaming pass over all reads (`minimap2` against
+  the bait concatenated with itself, or DIAMOND against the seed proteins)
+  keeps any read with ≥ 300 bp of hit. This is deliberately permissive.
+  Only read IDs and the small candidate set are written; the full read set
+  is never rewritten.
+* **Selection by k-mer coverage** (`fishing.method: kmer`, the default).
+  Within the candidate set, mitogenome k-mers occur hundreds to thousands of
+  times; the nuclear flanks of a NUMT read and sequencing errors occur only a
+  few times. FOAM:
+  1. finds the mitochondrial coverage peak in the k-mer abundance spectrum;
+  2. scores each read by the fraction of its k-mers at mitochondrial
+     coverage;
+  3. keeps reads scoring at least half of a typical mito read.
+
+  Both cut-offs are relative to the data, so they adapt to read accuracy and
+  bait divergence, and NUMT-carrying reads are rejected by coverage rather
+  than by an identity threshold. `results/pass*/read_selection.json` reports
+  the spectrum, the peak and the thresholds. `fishing.method: alignment`
+  restores the old behaviour: keep reads ≥ 80 % covered by bait alignments.
+* **Second pass, self-baited** (reads mode, `fishing.second_pass: true`).
+  The pass-1 draft, which is the sample's own mitogenome, becomes the bait
+  for a second fishing pass and a fresh flye assembly. Those reads also
+  polish the result. With a near-identical bait the prefilter no longer
+  depends on how divergent the first seed was.
+
+### Finishing
+
 * **Candidates.** Circular contigs (flye `assembly_info.txt`; hifiasm `…c`
   names) whose length is between 0.75× the expected length and 4 × 1.25× it,
   to allow for tandem copies. A whole hifiasm assembly can be screened
@@ -93,9 +127,13 @@ lineage and takes the mitochondrial genetic code from NCBI Taxonomy.
        --contigs flye/assembly.fasta --flye-info flye/assembly_info.txt \
        --reads reads.ont.fastq.gz --read-type ont-hq
 
-   # from reads only
+   # from reads only, bait fetched from NCBI
    ./create_config.py --mode reads --tolid ibLobCana --taxid 6973 --email you@inst.org \
        --reads reads.ont.fastq.gz --read-type ont-hq --expected-length 15025
+
+   # from reads only, no bait at all (conserved-protein seed)
+   ./create_config.py --mode reads --tolid ibLobCana --taxon arthropoda \
+       --reads reads.ont.fastq.gz --read-type ont-hq
    ```
    Set `mitos.runmitos` to `runmitos.py` for MITOS 2.1.3 or `runmitos` for
    ≥ 2.1.7 (`--runmitos` in `create_config.py`).
@@ -118,7 +156,8 @@ bin/foam.py annotate -i candidate.fa -o out/sp_MT --taxon mollusca \
 ```
 
 `bin/foam.py --help` lists all subcommands (`annotate`, `split-copies`,
-`candidates`, `fish-filter`, `double-bait`, `rotate`, `fetch-bait`).
+`candidates`, `fish-filter`, `kmer-select`, `seed-proteins`, `double-bait`,
+`rotate`, `fetch-bait`).
 
 ## Tests
 
@@ -131,37 +170,20 @@ The annotate tests use a fake `runmitos` (`tests/data/fake_runmitos.py`), so
 MITOS is not needed. `foam/` is standard-library-only Python and stays
 compatible with Python 3.6, the version in the MITOS 2.1.3 environment.
 
-## Ideas for making it more robust (not implemented yet)
+## Possible further improvements
 
-Read fishing still depends on cut-offs (`min_read_frac`, `min_identity`,
-`min_aln`) and on how close the bait is. Possible next steps:
-
-1. **Two-pass, self-baited fishing.** Fish loosely with the related bait,
-   assemble, then re-fish with the sample's own draft mitogenome. The second
-   pass is near-identical, so thresholds hardly matter and NUMTs separate
-   cleanly by identity.
-2. **k-mer based selection.** Count k-mers in the reads (or a subsample).
-   Mito k-mers have 100–1000× nuclear coverage, so picking reads rich in
-   high-abundance k-mers that also occur in the draft/bait needs no
-   alignment-identity thresholds. It is also faster than minimap2 on the full
-   read set, and it can be the bait-free fallback when no relative is
-   sequenced.
-3. **Gene-based seeds.** Instead of a whole mitogenome from another genus,
-   seed with conserved protein-coding genes (cox1, cob, nad5) and fish by
-   translated alignment (e.g. miniprot/diamond on reads). Order and
-   control-region differences between taxa then stop mattering.
-4. **Coverage-based NUMT rejection.** Mito reads have a coverage peak far
-   above nuclear reads. Cluster candidate reads by depth of their best
-   contig and drop the low-depth cluster instead of using identity cut-offs.
-5. **Assembly-graph check.** Use the flye/hifiasm graph (GFA) to confirm
+1. **Assembly-graph check.** Use the flye/hifiasm graph (GFA) to confirm
    circularity and to detect real heteroplasmic/duplicated regions before
    collapsing tandem copies.
-6. **Polish on a circular target.** Polish a copy extended by a few kb on each
+2. **Polish on a circular target.** Polish a copy extended by a few kb on each
    side (or a 2-copy dimer) and cut the polished monomer back out with the
    tandem splitter, so the linearisation point gets full read support.
-7. **Second annotator.** Compare with MitoZ/MitoFinder or a tRNAscan-SE/ARWEN
+3. **Second annotator.** Compare with MitoZ/MitoFinder or a tRNAscan-SE/ARWEN
    tRNA pass, and report disagreements, for divergent taxa where MITOS2's
    reference set is thin.
+4. **Faster k-mer counting.** `kmer-select` is pure Python (~1.5 MB/s, and
+   counting is subsampled above 300 Mb of candidate reads). For very
+   high-coverage samples, KMC or a compiled counter could replace it.
 
 ## Contributors
 

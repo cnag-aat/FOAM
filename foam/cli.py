@@ -184,6 +184,40 @@ def cmd_fish_filter(a):
     sys.stderr.write("fish-filter: %d reads kept\n" % n)
 
 
+def cmd_kmer_select(a):
+    from . import kmers
+    keep, rep = kmers.select(a.reads, k=a.k, mod=a.sampling,
+                             coverage_fraction=a.coverage_fraction,
+                             min_score_fraction=a.min_score_fraction,
+                             max_bases=a.max_bases)
+    with open(a.output, "w") as out:
+        for rid in keep:
+            out.write(rid + "\n")
+    ann.dump_json(rep, a.report or a.output + ".json")
+    if not keep:
+        sys.exit("kmer-select: no reads selected (%s)" % rep.get("error", "see report"))
+    sys.stderr.write("kmer-select: kept %d of %d candidate reads (mito k-mer peak %s, "
+                     "abundance threshold %.1f, typical read score %.2f)\n" % (
+                         rep["n_kept"], rep["n_candidates"], rep["coverage_peak"],
+                         rep["abundance_threshold"], rep["typical_mito_read_score"]))
+
+
+def cmd_seed_proteins(a):
+    """Reference mitochondrial proteins from the MITOS database (gene seeds)."""
+    out = []
+    for gene in a.genes.split(","):
+        path = os.path.join(a.refdir, a.refseq, "featureProt", gene + ".fas")
+        if not os.path.exists(path):
+            sys.exit("no protein file %s" % path)
+        recs = seqio.read_fasta(path)
+        if a.max_per_gene and len(recs) > a.max_per_gene:
+            step = len(recs) / float(a.max_per_gene)
+            recs = [recs[int(i * step)] for i in range(a.max_per_gene)]
+        out += [(n.replace(":", "|"), d, s.replace("*", "")) for n, d, s in recs]
+    seqio.write_fasta(out, a.output)
+    sys.stderr.write("%d seed proteins written to %s\n" % (len(out), a.output))
+
+
 def cmd_candidates(a):
     recs = seqio.read_fasta(a.input)
     exp = a.expected_length
@@ -292,6 +326,29 @@ def build_parser():
     s.add_argument("--min-len", type=int, default=1000)
     s.add_argument("--max-len", type=int, default=0)
     s.set_defaults(func=cmd_fish_filter)
+
+    s = sub.add_parser("kmer-select",
+                       help="keep candidate reads made of mito-coverage k-mers (rejects NUMT reads)")
+    s.add_argument("reads", nargs="+", help="candidate reads (FASTA/FASTQ, gz ok)")
+    s.add_argument("-o", "--output", required=True, help="selected read IDs")
+    s.add_argument("--report", help="JSON report (default <output>.json)")
+    s.add_argument("-k", type=int, default=21)
+    s.add_argument("--sampling", type=int, default=8, help="use 1/N of k-mers (hash-sampled)")
+    s.add_argument("--coverage-fraction", type=float, default=0.2,
+                   help="mito k-mers: abundance >= this fraction of the mito peak")
+    s.add_argument("--min-score-fraction", type=float, default=0.5,
+                   help="keep reads scoring >= this fraction of the typical mito read")
+    s.add_argument("--max-bases", type=int, default=300000000,
+                   help="subsample reads above this many bases for counting")
+    s.set_defaults(func=cmd_kmer_select)
+
+    s = sub.add_parser("seed-proteins", help="write conserved mito proteins (gene seeds)")
+    s.add_argument("--refdir", required=True)
+    s.add_argument("--refseq", default="refseq81m")
+    s.add_argument("--genes", default="cox1,cox2,cox3,cob,nad1,nad4,nad5")
+    s.add_argument("--max-per-gene", type=int, default=2000)
+    s.add_argument("-o", "--output", required=True)
+    s.set_defaults(func=cmd_seed_proteins)
 
     s = sub.add_parser("candidates", help="select candidate mito contigs")
     s.add_argument("-i", "--input", required=True)

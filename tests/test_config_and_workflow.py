@@ -43,6 +43,8 @@ def test_presets_in_config(root, tmp_path, files):
 
 @pytest.mark.parametrize("args", [
     ["--mode", "reads", "--tolid", "x", "--taxon", "mollusca"],                 # no reads
+    ["--mode", "reads", "--tolid", "x", "--taxon", "mollusca", "--reads", "CONTIGS",
+     "--seed", "bait"],                                                         # seed bait, no bait
     ["--mode", "hifiasm", "--tolid", "x", "--taxon", "mollusca"],               # no contigs
     ["--mode", "hifiasm", "--tolid", "x", "--contigs", "/does/not/exist.fa", "--taxon", "mollusca"],
     ["--mode", "hifiasm", "--tolid", "x", "--contigs", "CONTIGS"],              # no taxon
@@ -55,12 +57,26 @@ def test_config_errors(root, tmp_path, files, args):
     assert r.returncode != 0
 
 
-def dryrun(root, cfg, tmp_path):
+def dryrun(root, cfg, tmp_path, jobs=False):
+    """Dry-run; returns stdout, or {rule: job count} with jobs=True."""
     r = subprocess.run(["snakemake", "-n", "-s", os.path.join(root, "bin", "foam.smk"),
-                        "--configfile", cfg, "-d", str(tmp_path / "run"), "--quiet", "rules"],
+                        "--configfile", cfg, "-d", str(tmp_path / "run")],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     assert r.returncode == 0, r.stdout
-    return r.stdout
+    if not jobs:
+        return r.stdout
+    counts, in_table = {}, False
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if f[:2] == ["job", "count"]:
+            in_table = True
+            continue
+        if in_table:
+            if len(f) == 2 and f[1].isdigit() and f[0] != "total":
+                counts[f[0]] = int(f[1])
+            elif f and f[0] == "total":
+                break
+    return counts
 
 
 @needs_snakemake
@@ -69,7 +85,7 @@ def test_dryrun_hifiasm(root, tmp_path, files):
                          "--taxon", "mollusca", "--contigs", files["contigs.fa"])
     out = dryrun(root, cfg, tmp_path)
     assert "annotate_final" in out and "candidates" in out
-    for r in ("fish_reads", "flye_assembly", "polish", "annotate_prepolish"):
+    for r in ("prefilter_reads", "flye_assembly", "polish", "annotate_draft"):
         assert r not in out
 
 
@@ -79,10 +95,11 @@ def test_dryrun_flye(root, tmp_path, files):
                          "--taxon", "arthropoda", "--contigs", files["contigs.fa"],
                          "--flye-info", files["assembly_info.txt"], "--reads", files["reads.fq.gz"])
     out = dryrun(root, cfg, tmp_path)
-    for r in ("candidates", "double_bait", "fish_reads", "annotate_prepolish", "polish",
-              "annotate_final"):
+    for r in ("candidates", "double_bait", "prefilter_reads", "select_reads",
+              "annotate_draft", "polish", "annotate_final"):
         assert r in out
-    assert "flye_assembly" not in out
+    for r in ("flye_assembly", "seed_proteins"):
+        assert r not in out
 
 
 @needs_snakemake
@@ -90,11 +107,24 @@ def test_dryrun_reads(root, tmp_path, files):
     cfg, _ = make_config(root, tmp_path, "--mode", "reads", "--tolid", "iTest",
                          "--taxon", "arthropoda", "--bait", files["bait.fa"],
                          "--reads", files["reads.fq.gz"])
-    out = dryrun(root, cfg, tmp_path)
-    for r in ("double_bait", "fish_reads", "flye_assembly", "candidates",
-              "annotate_prepolish", "polish", "annotate_final"):
-        assert r in out
-    assert "fetch_bait" not in out
+    out = dryrun(root, cfg, tmp_path, jobs=True)
+    # two fishing passes (bait, then own draft), one polish
+    for r, n in (("double_bait", 2), ("prefilter_reads", 2), ("select_reads", 2),
+                 ("flye_assembly", 2), ("candidates", 2), ("annotate_draft", 2),
+                 ("polish", 1), ("annotate_final", 1)):
+        assert out.get(r) == n, (r, out)
+    assert "fetch_bait" not in out and "seed_proteins" not in out
+
+
+@needs_snakemake
+def test_dryrun_reads_gene_seed_single_pass(root, tmp_path, files):
+    cfg, c = make_config(root, tmp_path, "--mode", "reads", "--tolid", "iTest",
+                         "--taxon", "arthropoda", "--reads", files["reads.fq.gz"],
+                         "--no-second-pass")
+    assert c["fishing"]["seed"] == "auto"
+    out = dryrun(root, cfg, tmp_path, jobs=True)
+    assert out.get("seed_proteins") == 1 and "double_bait" not in out
+    assert out.get("prefilter_reads") == 1 and out.get("flye_assembly") == 1
 
 
 @needs_snakemake

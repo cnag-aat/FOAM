@@ -3,7 +3,8 @@
 
 Three starting points (``--mode``):
 
-  reads     reads -> fish mito reads with a bait -> flye -> polish -> annotate
+  reads     reads -> fish mito reads (bait mitogenome or conserved proteins)
+            -> flye -> re-fish with own draft -> flye -> polish -> annotate
   flye      flye circular contig(s) + reads   -> polish -> annotate
   hifiasm   hifiasm contig(s) (or a whole assembly) -> annotate (no polishing,
             no reads needed)
@@ -95,8 +96,8 @@ def build_config(a):
         sys.exit("error: --mode %s needs --reads" % a.mode)
     if a.mode in ("flye", "hifiasm") and not contigs:
         sys.exit("error: --mode %s needs --contigs" % a.mode)
-    if a.mode == "reads" and not a.bait and not a.taxid:
-        sys.exit("error: --mode reads needs --bait or --taxid (+ --email) to fetch one")
+    if a.mode == "reads" and a.seed == "bait" and not (a.bait or (a.taxid and a.email)):
+        sys.exit("error: --seed bait needs --bait, or --taxid with --email to fetch one")
     if a.taxid and not a.bait and a.mode == "reads" and not a.email:
         sys.exit("error: fetching a bait from NCBI needs --email")
     flye_flag, mm2_preset = READ_TYPES[a.read_type]
@@ -126,6 +127,17 @@ def build_config(a):
             "min_bait_cov": 0.3,
         },
         "fishing": {
+            # seed for the first pass: bait (a related mitogenome), genes
+            # (conserved mito proteins, no bait needed) or auto
+            "seed": a.seed,
+            "seed_genes": "cox1,cox2,cox3,cob,nad1,nad4,nad5",
+            # kmer: permissive prefilter, then reads made of mito-coverage
+            # k-mers; alignment: reads mostly covered by bait alignments
+            "method": a.fishing_method,
+            "second_pass": not a.no_second_pass,
+            "prefilter_min_aln": 300,
+            "kmer": {"k": 21, "sampling": 8, "coverage_fraction": 0.2,
+                     "min_score_fraction": 0.5},
             "minimap2_preset": mm2_preset,
             "min_read_frac": 0.8,
             "min_aln": 1000,
@@ -174,6 +186,12 @@ def main(argv=None):
     g.add_argument("--flye-info", help="flye assembly_info.txt (circularity)")
     g.add_argument("--allow-linear", action="store_true")
     g.add_argument("--bait", help="bait/seed mitogenome FASTA")
+    g = p.add_argument_group("read fishing (reads/flye modes)")
+    g.add_argument("--seed", default="auto", choices=["auto", "bait", "genes"],
+                   help="first-pass seed; auto = bait if given/fetchable, else genes")
+    g.add_argument("--fishing-method", default="kmer", choices=["kmer", "alignment"])
+    g.add_argument("--no-second-pass", action="store_true",
+                   help="do not re-fish with the sample's own draft (reads mode)")
     g = p.add_argument_group("software")
     g.add_argument("--refdir", default=os.path.join(HERE, "utils", "refseq_dir"))
     g.add_argument("--refseq", default="refseq81m")

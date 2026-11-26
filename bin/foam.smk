@@ -2,12 +2,20 @@
 
 Starting points (config key ``mode``):
 
-  reads    bait -> fish mito reads -> flye -> candidate contigs -> annotate
-           (pick best tandem copy, orient) -> flye polish -> final annotate
-  flye     flye contig(s) + reads   -> candidates -> fish reads with the
-           contigs as bait -> annotate -> polish -> final annotate
-  hifiasm  hifiasm contig(s) or a whole hifiasm assembly -> candidates ->
-           final annotate (no polishing, no reads)
+  reads    pass 1: seed (bait mitogenome, or conserved mito proteins when no
+                   bait) -> candidate reads -> select reads -> flye -> draft
+           pass 2: the sample's own draft is the bait -> candidate reads ->
+                   select reads -> flye -> draft        (fishing.second_pass)
+           -> flye polish with the last pass's reads -> final annotate
+  flye     flye contig(s) + reads: the contigs are the (self) bait ->
+           candidate reads -> select reads -> draft -> polish -> final annotate
+  hifiasm  hifiasm contig(s) or a whole assembly -> candidates -> final
+           annotate (no reads, no polishing)
+
+Read selection (fishing.method):
+  kmer       permissive prefilter, then keep reads made of k-mers at
+             mitochondrial coverage (rejects NUMT-carrying reads by coverage)
+  alignment  keep reads whose alignments cover most of the read (FOAM 0.8)
 
 Write a config with ``create_config.py`` and run e.g.
 
@@ -29,23 +37,21 @@ READS = INP.get("reads") or []
 if isinstance(READS, str):
     READS = [READS]
 FISH = config.get("fishing", {})
+KMER = FISH.get("kmer", {})
 FLYE = config.get("flye", {})
 MITOS = config.get("mitos", {})
 CAND = config.get("candidates", {})
 TAND = config.get("tandem", {})
 THREADS = config.get("threads", {})
 KEEP = config.get("keep_intermediate", False)
+METHOD = FISH.get("method", "kmer")
+if METHOD not in ("kmer", "alignment"):
+    raise ValueError("fishing.method must be kmer or alignment")
 
 if MODE in ("reads", "flye") and not READS:
     raise ValueError("mode %s needs inputs.reads" % MODE)
 if MODE in ("flye", "hifiasm") and not INP.get("contigs"):
     raise ValueError("mode %s needs inputs.contigs" % MODE)
-
-FINAL = "results/final/%s_MT" % TOLID
-
-
-def maybe_temp(path):
-    return path if KEEP else temp(path)
 
 
 def bait_fasta():
@@ -54,6 +60,24 @@ def bait_fasta():
     if INP.get("taxid") and INP.get("ncbi_email"):
         return "results/bait/bait.fa"
     return None
+
+
+SEED = FISH.get("seed", "auto")
+if SEED == "auto":
+    SEED = "bait" if bait_fasta() else "genes"
+if MODE == "reads" and SEED == "bait" and not bait_fasta():
+    raise ValueError("fishing.seed is 'bait' but there is no inputs.bait or inputs.taxid+ncbi_email")
+
+# last fishing pass, whose draft gets polished
+LAST = 2 if (MODE == "reads" and FISH.get("second_pass", True)) else 1
+FINAL = "results/final/%s_MT" % TOLID
+
+wildcard_constraints:
+    p="[12]",
+
+
+def maybe_temp(path):
+    return path if KEEP else temp(path)
 
 
 def annotate_args():
@@ -85,7 +109,7 @@ rule all:
 localrules: all, fetch_bait
 
 
-# ----------------------------------------------------------------- bait
+# ----------------------------------------------------------------- seeds
 rule fetch_bait:
     """Closest complete mitogenome(s) in NCBI (needs internet: local rule)."""
     output:
@@ -102,87 +126,155 @@ rule fetch_bait:
         "-o {output} > {log} 2>&1"
 
 
-def fishing_bait(wc):
+rule seed_proteins:
+    """Conserved mitochondrial proteins from the MITOS reference set: a seed
+    that needs no related mitogenome and ignores gene order/control region."""
+    output:
+        fa="results/seed/proteins.fa",
+        db="results/seed/proteins.dmnd",
+    params:
+        refdir=MITOS.get("refdir", os.path.join(BASE, "utils", "refseq_dir")),
+        refseq=MITOS.get("refseq", "refseq81m"),
+        genes=FISH.get("seed_genes", "cox1,cox2,cox3,cob,nad1,nad4,nad5"),
+    log:
+        "logs/seed_proteins.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "{FOAM} seed-proteins --refdir {params.refdir} --refseq {params.refseq} "
+        "--genes {params.genes} -o {output.fa} > {log} 2>&1; "
+        "diamond makedb --in {output.fa} -d {output.db} >> {log} 2>&1"
+
+
+def bait_source(wc):
+    if wc.p == "2":
+        return "results/pass1/draft_MT.fa"          # the sample's own draft
     if MODE == "flye":
-        return "results/candidates/candidates.fa"
-    b = bait_fasta()
-    if b is None:
-        raise ValueError("mode reads needs inputs.bait or inputs.taxid + inputs.ncbi_email")
-    return b
+        return "results/pass1/candidates.fa"        # the user's flye contigs
+    return bait_fasta()
 
 
 rule double_bait:
     input:
-        fishing_bait,
+        bait_source,
     output:
-        maybe_temp("results/fishing/bait.doubled.fa"),
+        maybe_temp("results/pass{p}/bait.doubled.fa"),
     log:
-        "logs/double_bait.log",
+        "logs/double_bait.pass{p}.log",
     conda:
         "../envs/mapping.yaml"
     shell:
         "{FOAM} double-bait -i {input} -o {output} > {log} 2>&1"
 
 
-rule fish_reads:
-    """Stream reads through minimap2 against the doubled bait; keep reads whose
-    alignments cover most of the read.  Nothing but read IDs and the (small)
-    selected read set is written."""
-    input:
-        bait=rules.double_bait.output[0],
-        reads=READS,
-    output:
-        reads=maybe_temp("results/fishing/mito_reads.fastq.gz"),
-        ids=temp("results/fishing/mito_read_ids.txt"),
-    params:
-        preset=FISH.get("minimap2_preset", "map-ont"),
-        filt="--min-read-frac {} --min-aln {} --min-identity {} --min-len {} --max-len {}".format(
+# ----------------------------------------------------------------- fishing
+def prefilter_inputs(wc):
+    d = {"reads": READS}
+    if wc.p == "1" and MODE == "reads" and SEED == "genes":
+        d["db"] = rules.seed_proteins.output.db
+    else:
+        d["bait"] = "results/pass%s/bait.doubled.fa" % wc.p
+    return d
+
+
+def prefilter_cmd(wc, input, output, threads):
+    """Shell for the first, cheap read screen.  With fishing.method=kmer it
+    is deliberately permissive; the k-mer step does the real selection."""
+    if "db" in input.keys():
+        loop = " ".join(
+            "diamond blastx -d {db} -q {r} --query-gencode {c} -F 15 --range-culling -k 1 "
+            "--evalue 1e-5 --outfmt 6 qseqid -p {t} --quiet >> {raw};".format(
+                db=input.db, r=r, c=config["genetic_code"], t=threads, raw=output.ids + ".raw")
+            for r in input.reads)
+        return "rm -f {raw}; {loop} sort -u {raw} > {ids}; rm -f {raw}".format(
+            raw=output.ids + ".raw", loop=loop, ids=output.ids)
+    if METHOD == "kmer":
+        filt = "--min-read-frac 0 --min-identity 0 --min-aln {} --min-len {}".format(
+            FISH.get("prefilter_min_aln", 300), FISH.get("min_len", 1000))
+    else:
+        filt = "--min-read-frac {} --min-aln {} --min-identity {} --min-len {} --max-len {}".format(
             FISH.get("min_read_frac", 0.8), FISH.get("min_aln", 1000),
-            FISH.get("min_identity", 0.7), FISH.get("min_len", 1000), FISH.get("max_len", 0)),
+            FISH.get("min_identity", 0.7), FISH.get("min_len", 1000), FISH.get("max_len", 0))
+    return ("minimap2 -x {preset} --secondary=no -t {t} {bait} {reads} "
+            "| {foam} fish-filter {filt} > {ids}").format(
+        preset=FISH.get("minimap2_preset", "map-ont"), t=threads, bait=input.bait,
+        reads=" ".join(input.reads), foam=FOAM, filt=filt, ids=output.ids)
+
+
+rule prefilter_reads:
+    """Stream all reads once; write only IDs and the (small) candidate set."""
+    input:
+        unpack(prefilter_inputs),
+    output:
+        ids=temp("results/pass{p}/candidate_ids.txt"),
+        reads=temp("results/pass{p}/candidate_reads.fastq.gz"),
+    params:
+        cmd=prefilter_cmd,
     threads: THREADS.get("fish", 16)
     log:
-        "logs/fish_reads.log",
+        "logs/prefilter_reads.pass{p}.log",
     conda:
         "../envs/mapping.yaml"
     shell:
-        "(minimap2 -x {params.preset} --secondary=no -t {threads} {input.bait} {input.reads} "
-        "| {FOAM} fish-filter {params.filt} > {output.ids}) 2> {log}; "
+        "({params.cmd}) 2> {log}; "
         "seqkit grep -j {threads} -f {output.ids} {input.reads} -o {output.reads} 2>> {log}; "
-        "echo \"$(wc -l < {output.ids}) reads kept\" >> {log}"
+        "echo \"$(wc -l < {output.ids}) candidate reads\" >> {log}"
+
+
+rule select_reads:
+    """k-mer abundance selection (method kmer) or pass-through (alignment)."""
+    input:
+        "results/pass{p}/candidate_reads.fastq.gz",
+    output:
+        reads=maybe_temp("results/pass{p}/mito_reads.fastq.gz"),
+        report="results/pass{p}/read_selection.json",
+    params:
+        ids="results/pass{p}/mito_read_ids.txt",
+        kopts="-k {} --sampling {} --coverage-fraction {} --min-score-fraction {}".format(
+            KMER.get("k", 21), KMER.get("sampling", 8), KMER.get("coverage_fraction", 0.2),
+            KMER.get("min_score_fraction", 0.5)),
+    threads: 2
+    log:
+        "logs/select_reads.pass{p}.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        ("{FOAM} kmer-select {input} -o {params.ids} --report {output.report} {params.kopts} "
+         "> {log} 2>&1; seqkit grep -f {params.ids} {input} -o {output.reads} 2>> {log}; "
+         "rm -f {params.ids}") if METHOD == "kmer" else
+        ("cp {input} {output.reads}; echo '{{\"method\": \"alignment\"}}' > {output.report}")
 
 
 # ----------------------------------------------------------------- assemble
 rule flye_assembly:
     input:
-        reads="results/fishing/mito_reads.fastq.gz",
+        reads="results/pass{p}/mito_reads.fastq.gz",
     output:
-        fasta="results/flye/assembly.fasta",
-        info="results/flye/assembly_info.txt",
-        gfa="results/flye/assembly_graph.gfa",
+        fasta="results/pass{p}/flye/assembly.fasta",
+        info="results/pass{p}/flye/assembly_info.txt",
+        gfa="results/pass{p}/flye/assembly_graph.gfa",
     params:
         flag=FLYE.get("read_flag", "--nano-hq"),
         opts=FLYE.get("options", "--meta"),
-        tmp="results/flye/run",
+        tmp="results/pass{p}/flye/run",
     threads: THREADS.get("flye", 16)
     log:
-        "logs/flye_assembly.log",
+        "logs/flye_assembly.pass{p}.log",
     conda:
         "../envs/flye.yaml"
     shell:
         "rm -rf {params.tmp}; "
         "flye {params.flag} {input.reads} -o {params.tmp} -t {threads} {params.opts} > {log} 2>&1; "
-        "mv {params.tmp}/assembly.fasta {output.fasta}; "
-        "mv {params.tmp}/assembly_info.txt {output.info}; "
-        "mv {params.tmp}/assembly_graph.gfa {output.gfa}; "
-        "mv {params.tmp}/flye.log results/flye/flye.log; "
+        "for f in assembly.fasta assembly_info.txt assembly_graph.gfa flye.log; do "
+        "mv {params.tmp}/$f results/pass{wildcards.p}/flye/; done; "
         "rm -rf {params.tmp}"
 
 
 def candidate_inputs(wc):
     d = {}
     if MODE == "reads":
-        d["fasta"] = rules.flye_assembly.output.fasta
-        d["info"] = rules.flye_assembly.output.info
+        d["fasta"] = "results/pass%s/flye/assembly.fasta" % wc.p
+        d["info"] = "results/pass%s/flye/assembly_info.txt" % wc.p
     else:
         d["fasta"] = INP["contigs"]
         if INP.get("flye_info"):
@@ -207,7 +299,7 @@ def candidate_args(wc, input):
         a += ["--flye-info", input.info]
     elif MODE == "flye" or not CAND.get("require_circular", True):
         a.append("--allow-linear")
-    if INP.get("contig_names"):
+    if INP.get("contig_names") and MODE != "reads":
         a += ["--names"] + list(INP["contig_names"])
     return " ".join(a)
 
@@ -216,13 +308,13 @@ rule candidates:
     input:
         unpack(candidate_inputs),
     output:
-        fasta="results/candidates/candidates.fa",
-        json="results/candidates/candidates.fa.json",
+        fasta="results/pass{p}/candidates.fa",
+        json="results/pass{p}/candidates.fa.json",
     params:
         args=candidate_args,
     threads: 4
     log:
-        "logs/candidates.log",
+        "logs/candidates.pass{p}.log",
     conda:
         "../envs/mapping.yaml"
     shell:
@@ -231,34 +323,35 @@ rule candidates:
 
 
 # ----------------------------------------------------------------- annotate / polish
-rule annotate_prepolish:
+rule annotate_draft:
     """Split tandem copies, annotate, keep the most complete copy, orient."""
     input:
-        "results/candidates/candidates.fa",
+        "results/pass{p}/candidates.fa",
     output:
-        fa="results/prepolish/%s_MT.fa" % TOLID,
-        report="results/prepolish/%s_MT.report.json" % TOLID,
+        fa="results/pass{p}/draft_MT.fa",
+        report="results/pass{p}/draft_MT.report.json",
     params:
         args=annotate_args(),
-        prefix="results/prepolish/%s_MT" % TOLID,
-        work="results/prepolish/work",
+        prefix="results/pass{p}/draft_MT",
+        seqid="%s_MT_draft" % TOLID,
+        work="results/pass{p}/annotate_work",
     threads: THREADS.get("annotate", 4)
     log:
-        "logs/annotate_prepolish.log",
+        "logs/annotate_draft.pass{p}.log",
     conda:
         "../envs/mitos.yaml"
     shell:
-        "{FOAM} annotate -i {input} -o {params.prefix} --workdir {params.work} "
-        "-t {threads} {params.args} > {log} 2>&1"
+        "{FOAM} annotate -i {input} -o {params.prefix} --seqid {params.seqid} "
+        "--workdir {params.work} -t {threads} {params.args} > {log} 2>&1"
 
 
 rule polish:
-    """flye polishing of the single chosen copy.  The copy is rotated by half
-    its length first so the linear ends (poorly polished) are not at the
-    start gene; the final step re-orients."""
+    """flye polishing of the chosen copy with the last pass's reads.  The
+    copy is rotated by half its length first so the linear ends (poorly
+    polished) are away from the start gene; the final step re-orients."""
     input:
-        target=rules.annotate_prepolish.output.fa,
-        reads="results/fishing/mito_reads.fastq.gz",
+        target="results/pass%d/draft_MT.fa" % LAST,
+        reads="results/pass%d/mito_reads.fastq.gz" % LAST,
     output:
         "results/polish/polished.fa",
     params:
@@ -282,7 +375,7 @@ rule polish:
 
 rule annotate_final:
     input:
-        "results/candidates/candidates.fa" if MODE == "hifiasm" else "results/polish/polished.fa",
+        "results/pass1/candidates.fa" if MODE == "hifiasm" else "results/polish/polished.fa",
     output:
         expand(FINAL + ".{ext}", ext=["fa", "gff3", "bed", "genes.tsv", "report.json"]),
     params:
