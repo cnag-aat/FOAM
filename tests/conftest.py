@@ -23,3 +23,6 @@ needs_minimap2 = pytest.mark.skipif(shutil.which("minimap2") is None,
                                     reason="minimap2 not on PATH")
 needs_snakemake = pytest.mark.skipif(shutil.which("snakemake") is None,
                                      reason="snakemake not on PATH")
+needs_fastk = pytest.mark.skipif(
+    any(shutil.which(t) is None for t in ("FastK", "Histex", "Profex")),
+    reason="FastK not on PATH")

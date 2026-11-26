@@ -230,16 +230,20 @@ rule select_reads:
         report="results/pass{p}/read_selection.json",
     params:
         ids="results/pass{p}/mito_read_ids.txt",
-        kopts="-k {} --sampling {} --coverage-fraction {} --min-score-fraction {}".format(
+        kopts="-k {} --sampling {} --coverage-fraction {} --min-score-fraction {} "
+              "--backend {} --memory {}".format(
             KMER.get("k", 21), KMER.get("sampling", 8), KMER.get("coverage_fraction", 0.2),
-            KMER.get("min_score_fraction", 0.5)),
-    threads: 2
+            KMER.get("min_score_fraction", 0.5), KMER.get("backend", "auto"),
+            KMER.get("memory_gb", 4)),
+        tmp="results/pass{p}",
+    threads: THREADS.get("kmer", 8)
     log:
         "logs/select_reads.pass{p}.log",
     conda:
         "../envs/mapping.yaml"
     shell:
         ("{FOAM} kmer-select {input} -o {params.ids} --report {output.report} {params.kopts} "
+         "-t {threads} --tmpdir {params.tmp} "
          "> {log} 2>&1; seqkit grep -f {params.ids} {input} -o {output.reads} 2>> {log}; "
          "rm -f {params.ids}") if METHOD == "kmer" else
         ("cp {input} {output.reads}; echo '{{\"method\": \"alignment\"}}' > {output.report}")

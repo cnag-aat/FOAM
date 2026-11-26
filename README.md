@@ -49,7 +49,14 @@ cut-offs, or on how close a relative's mitogenome is.
 
   Both cut-offs are relative to the data, so they adapt to read accuracy and
   bait divergence, and NUMT-carrying reads are rejected by coverage rather
-  than by an identity threshold. `results/pass*/read_selection.json` reports
+  than by an identity threshold.
+
+  Counting uses [FastK](https://github.com/thegenemyers/FASTK) (in the
+  `mapping` env): every k-mer is counted, and each read's count profile is
+  read back with `Profex`, in parallel over read ranges. 300 Mb of
+  candidate reads takes about 12 s on 4 threads. Without FastK on PATH (or
+  with `fishing.kmer.backend: python`), a pure-Python counter samples
+  1/8 of the k-mers instead; it is about 8× slower even so. `results/pass*/read_selection.json` reports
   the spectrum, the peak and the thresholds. `fishing.method: alignment`
   restores the old behaviour: keep reads ≥ 80 % covered by bait alignments.
 * **Second pass, self-baited** (reads mode, `fishing.second_pass: true`).
@@ -162,7 +169,7 @@ bin/foam.py annotate -i candidate.fa -o out/sp_MT --taxon mollusca \
 ## Tests
 
 ```bash
-pip install pytest pyyaml        # snakemake and minimap2 on PATH enable more tests
+pip install pytest pyyaml        # snakemake, minimap2 and FastK on PATH enable more tests
 python -m pytest tests
 ```
 
@@ -181,10 +188,6 @@ compatible with Python 3.6, the version in the MITOS 2.1.3 environment.
 3. **Second annotator.** Compare with MitoZ/MitoFinder or a tRNAscan-SE/ARWEN
    tRNA pass, and report disagreements, for divergent taxa where MITOS2's
    reference set is thin.
-4. **Faster k-mer counting.** `kmer-select` is pure Python (~1.5 MB/s, and
-   counting is subsampled above 300 Mb of candidate reads). For very
-   high-coverage samples, KMC or a compiled counter could replace it.
-
 ## Contributors
 
 Fernando Cruz, Jèssica Gómez-Garrido and Tyler Alioto. Genome Assembly and

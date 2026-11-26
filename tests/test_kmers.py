@@ -1,6 +1,8 @@
+import collections
+import os
 import random
 
-from conftest import rand_seq
+from conftest import needs_fastk, rand_seq
 from foam import kmers, seqio
 
 
@@ -42,9 +44,16 @@ def simulate(tmp_path, error=0.02, mito_reads=300, numt_loci=15, nuc_cov=4):
     return str(path)
 
 
-def test_kmer_select_keeps_mito_rejects_numt_reads(tmp_path):
+import pytest
+
+BACKENDS = ["python", pytest.param("fastk", marks=needs_fastk)]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_kmer_select_keeps_mito_rejects_numt_reads(tmp_path, backend):
     path = simulate(tmp_path)
-    keep, rep = kmers.select([path], k=21, mod=4)
+    keep, rep = kmers.select([path], k=21, mod=4, backend=backend, tmpdir=str(tmp_path))
+    assert rep["backend"] == backend
     kept = set(keep)
     mito = [r for r in kept if r.startswith("mito_")]
     numt = [r for r in kept if r.startswith("numt_")]
@@ -54,9 +63,11 @@ def test_kmer_select_keeps_mito_rejects_numt_reads(tmp_path):
     assert 4 < rep["abundance_threshold"] < rep["coverage_peak"]
 
 
-def test_kmer_select_independent_of_read_accuracy(tmp_path):
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_kmer_select_independent_of_read_accuracy(tmp_path, backend):
     for err in (0.005, 0.06):
-        keep, rep = kmers.select([simulate(tmp_path, error=err)], k=21, mod=4)
+        keep, rep = kmers.select([simulate(tmp_path, error=err)], k=21, mod=4,
+                                 backend=backend, tmpdir=str(tmp_path))
         assert sum(r.startswith("mito_") for r in keep) >= 0.95 * 300
         assert not any(r.startswith("numt_") for r in keep)
 
@@ -67,8 +78,34 @@ def test_fastq_reading(tmp_path):
     assert list(kmers.iter_reads(str(p))) == [("a", "ACGT"), ("b", "GGCC")]
 
 
-def test_no_mito_reports_error(tmp_path):
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_no_mito_reports_error(tmp_path, backend):
     p = tmp_path / "r.fa"
     seqio.write_fasta([("r%d" % i, rand_seq(2000, i)) for i in range(20)], str(p))
-    keep, rep = kmers.select([str(p)])
+    keep, rep = kmers.select([str(p)], backend=backend, tmpdir=str(tmp_path))
     assert keep == [] and "error" in rep
+
+
+def test_peak_from_hist_matches_counts():
+    rnd = random.Random(3)
+    counts = {i: rnd.choice([1, 1, 2, 3, 150, 160, 170, 180]) for i in range(5000)}
+    h = collections.Counter(counts.values())
+    assert kmers.peak_from_hist(h) == kmers.coverage_peak(counts)
+    assert kmers.histogram_from_hist(h) == kmers.histogram(counts)
+
+
+@needs_fastk
+def test_fastk_read_order_with_short_and_empty_reads(tmp_path):
+    """Profiles are matched to reads by ordinal; FastK drops empty FASTA
+    records, so FOAM must keep names and profiles aligned itself."""
+    a, b = tmp_path / "a.fa", tmp_path / "b.fq"
+    a.write_text(">e1\n>s1\nACGT\n>long1\n%s\n>n1\n%s\n" % ("ACGTTGCA" * 20, "N" * 40))
+    b.write_text("@long2\n%s\n+\n%s\n@e2\n\n+\n\n" % ("ACGTTGCA" * 5, "I" * 40))
+    fk = kmers.FastK([str(a), str(b)], k=21, tmpdir=str(tmp_path), threads=4)
+    try:
+        assert fk.short_ids == ["e1", "s1", "e2"]
+        rows = list(fk.scores(1, workers=2))
+    finally:
+        fk.close()
+    assert [(r, n) for r, n, _ in rows] == [("long1", 140), ("n1", 0), ("long2", 20)]
+    assert not [f for f in os.listdir(str(tmp_path)) if f.startswith("foam_fastk")]

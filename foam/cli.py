@@ -189,16 +189,18 @@ def cmd_kmer_select(a):
     keep, rep = kmers.select(a.reads, k=a.k, mod=a.sampling,
                              coverage_fraction=a.coverage_fraction,
                              min_score_fraction=a.min_score_fraction,
-                             max_bases=a.max_bases)
+                             max_bases=a.max_bases, backend=a.backend,
+                             threads=a.threads, memory=a.memory,
+                             tmpdir=a.tmpdir or os.path.dirname(os.path.abspath(a.output)))
     with open(a.output, "w") as out:
         for rid in keep:
             out.write(rid + "\n")
     ann.dump_json(rep, a.report or a.output + ".json")
     if not keep:
         sys.exit("kmer-select: no reads selected (%s)" % rep.get("error", "see report"))
-    sys.stderr.write("kmer-select: kept %d of %d candidate reads (mito k-mer peak %s, "
+    sys.stderr.write("kmer-select [%s]: kept %d of %d candidate reads (mito k-mer peak %s, "
                      "abundance threshold %.1f, typical read score %.2f)\n" % (
-                         rep["n_kept"], rep["n_candidates"], rep["coverage_peak"],
+                         rep["backend"], rep["n_kept"], rep["n_candidates"], rep["coverage_peak"],
                          rep["abundance_threshold"], rep["typical_mito_read_score"]))
 
 
@@ -339,7 +341,12 @@ def build_parser():
     s.add_argument("--min-score-fraction", type=float, default=0.5,
                    help="keep reads scoring >= this fraction of the typical mito read")
     s.add_argument("--max-bases", type=int, default=300000000,
-                   help="subsample reads above this many bases for counting")
+                   help="python backend: subsample reads above this many bases")
+    s.add_argument("--backend", default="auto", choices=["auto", "fastk", "python"],
+                   help="k-mer counter (auto: FastK if on PATH)")
+    s.add_argument("-t", "--threads", type=int, default=4, help="FastK threads")
+    s.add_argument("--memory", type=int, default=4, help="FastK sort memory (GB)")
+    s.add_argument("--tmpdir", help="FastK scratch dir (default: next to --output)")
     s.set_defaults(func=cmd_kmer_select)
 
     s = sub.add_parser("seed-proteins", help="write conserved mito proteins (gene seeds)")

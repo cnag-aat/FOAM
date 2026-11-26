@@ -136,8 +136,10 @@ def build_config(a):
             "method": a.fishing_method,
             "second_pass": not a.no_second_pass,
             "prefilter_min_aln": 300,
-            "kmer": {"k": 21, "sampling": 8, "coverage_fraction": 0.2,
-                     "min_score_fraction": 0.5},
+            # backend: fastk (Gene Myers' FastK; all k-mers, fast), python
+            # (1/sampling of the k-mers, no dependencies) or auto
+            "kmer": {"backend": "auto", "k": 21, "sampling": 8, "coverage_fraction": 0.2,
+                     "min_score_fraction": 0.5, "memory_gb": 4},
             "minimap2_preset": mm2_preset,
             "min_read_frac": 0.8,
             "min_aln": 1000,
@@ -156,7 +158,8 @@ def build_config(a):
             "max_evalue": 0.01,
             "parallel": 2,
         },
-        "threads": {"fish": a.threads, "flye": a.threads, "annotate": 4},
+        "threads": {"fish": a.threads, "kmer": min(a.threads, 8), "flye": a.threads,
+                    "annotate": 4},
         "keep_intermediate": False,
     }
     return cfg
