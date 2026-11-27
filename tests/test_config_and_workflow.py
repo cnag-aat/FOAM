@@ -133,3 +133,40 @@ def test_dryrun_reads_fetches_bait(root, tmp_path, files):
                          "--taxon", "arthropoda", "--taxid", "6973", "--email", "x@y.org",
                          "--offline", "--reads", files["reads.fq.gz"])
     assert "fetch_bait" in dryrun(root, cfg, tmp_path)
+
+
+CNAG_LIMITS = {"all": 60, "research": 720, "research_long": None}
+
+
+def _profile(root, name):
+    return yaml.safe_load(open(os.path.join(root, "examples", "profiles", name, "config.yaml")))
+
+
+def _unquote(v):
+    """Profile resource strings are Python literals: "'all'" -> all."""
+    v = str(v)
+    assert v[:1] == v[-1:] == "'", "partition/account must be quoted: %r" % v
+    return v[1:-1]
+
+
+def test_cnag_profile_runtimes_fit_partitions(root):
+    p = _profile(root, "sm9-slurm-cnag")
+    default = p["default-resources"]
+    rules = dict.fromkeys(("seed_proteins", "double_bait", "prefilter_reads", "select_reads",
+                           "flye_assembly", "candidates", "annotate_draft", "polish",
+                           "annotate_final"))
+    assert set(p["set-resources"]) <= set(rules), "unknown rule in profile"
+    for rule in rules:
+        res = dict(default, **p["set-resources"].get(rule, {}))
+        part = _unquote(res["slurm_partition"])
+        limit = CNAG_LIMITS[part]
+        assert limit is None or res["runtime"] <= limit, (rule, part, res["runtime"])
+        assert _unquote(res["slurm_account"]) == "sa_assembly"
+
+
+def test_sp_gpus_profile(root):
+    p = _profile(root, "sm9-slurm-sp_gpus")
+    d = p["default-resources"]
+    assert _unquote(d["slurm_partition"]) == "sp_gpus" and "runtime" not in d
+    for res in p["set-resources"].values():
+        assert "slurm_partition" not in res and "runtime" not in res

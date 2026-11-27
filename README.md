@@ -115,7 +115,18 @@ lineage and takes the mitochondrial genetic code from NCBI Taxonomy.
 
 ## Running it
 
-1. Clone this repository. Download the MITOS refseq81 databases from
+FOAM needs Snakemake ≥ 9. Snakemake builds the tool environments itself
+(`--use-conda`, from `envs/`): minimap2, seqkit, DIAMOND and FastK
+(`mapping`), flye (`flye`), and MITOS 2.1.3 with Infernal (`mitos`, Linux
+only). FOAM's own Python code uses only the standard library.
+
+1. Clone this repository and create a driver environment for Snakemake:
+
+   ```bash
+   conda create -n snakemake -c conda-forge -c bioconda \
+       "snakemake>=9" snakemake-executor-plugin-slurm
+   ```
+   Download the MITOS refseq81 databases from
    https://zenodo.org/records/2672835 into `utils/refseq_dir` and unpack them
    (`tar jxf refseq81m.tar.bz2`).
 2. Write a config:
@@ -144,12 +155,35 @@ lineage and takes the mitochondrial genetic code from NCBI Taxonomy.
    ```
    Set `mitos.runmitos` to `runmitos.py` for MITOS 2.1.3 or `runmitos` for
    ≥ 2.1.7 (`--runmitos` in `create_config.py`).
-3. Run:
+3. Build the conda environments once, on a node with internet access
+   (compute nodes often have none). `--conda-prefix` shares one copy
+   between runs:
 
    ```bash
-   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml --use-conda -j 16
-   # SLURM: --profile /path/to/FOAM/examples/profiles/slurm
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --use-conda --conda-prefix ~/foam-conda-envs --conda-create-envs-only
    ```
+4. Run, locally or on SLURM with one of the example profiles:
+
+   ```bash
+   # locally / inside one job
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --use-conda --conda-prefix ~/foam-conda-envs -j 16
+
+   # SLURM (CNAG partitions all / research / research_long)
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --conda-prefix ~/foam-conda-envs --profile /path/to/FOAM/examples/profiles/sm9-slurm-cnag
+   ```
+
+   | profile | partitions |
+   |---|---|
+   | `sm9-slurm-cnag` | each rule on `all` (≤ 1 h), `research` (≤ 12 h) or `research_long` with a fitting runtime |
+   | `sm9-slurm-sp_gpus` | every job on `sp_gpus`, no time limit (no GPUs requested) |
+
+   Both set memory per rule and the account `sa_assembly`; override any of
+   it with `--set-resources rule:key=value`. In a profile, partition names
+   are written `"'all'"`: Snakemake evaluates resource values as Python, and
+   a bare `all` is Python's `all()` function.
 
 Outputs go to `results/final/<tolid>_MT.{fa,gff3,bed,genes.tsv,report.json}`;
 each step logs to `logs/<rule>.log`. Intermediate files are deleted unless

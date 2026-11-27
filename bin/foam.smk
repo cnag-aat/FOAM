@@ -17,12 +17,18 @@ Read selection (fishing.method):
              mitochondrial coverage (rejects NUMT-carrying reads by coverage)
   alignment  keep reads whose alignments cover most of the read (FOAM 0.8)
 
-Write a config with ``create_config.py`` and run e.g.
+Needs Snakemake >= 9.  Write a config with ``create_config.py`` and run e.g.
 
   snakemake -s bin/foam.smk --configfile sp.foam.yaml --use-conda -j 16
+  snakemake -s bin/foam.smk --configfile sp.foam.yaml \
+      --profile examples/profiles/sm9-slurm-cnag        # SLURM
 """
 
 import os
+
+from snakemake.utils import min_version
+
+min_version("9.0")
 
 BASE = os.path.abspath(os.path.join(workflow.basedir, ".."))
 FOAM = "python {}/bin/foam.py".format(BASE)
