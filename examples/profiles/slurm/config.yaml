@@ -10,16 +10,19 @@ default-resources:
   mem_mb: 8000
   runtime: 120
 set-resources:
-  fish_reads:
-    mem_mb: 32000
+  prefilter_reads:
+    mem_mb: 16000
     runtime: 720
+  select_reads:
+    mem_mb: 16000
+    runtime: 120
   flye_assembly:
     mem_mb: 64000
     runtime: 720
   polish:
     mem_mb: 32000
     runtime: 360
-  annotate_prepolish:
+  annotate_draft:
     mem_mb: 16000
     runtime: 240
   annotate_final:
