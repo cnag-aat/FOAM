@@ -37,7 +37,7 @@ tandem:
 mitos:
   refdir: "/path/to/FOAM/utils/refseq_dir"
   refseq: "refseq81m"
-  runmitos: "runmitos.py"
+  runmitos: "auto"
   options: ""
   max_overlap: 15
   max_evalue: 0.01

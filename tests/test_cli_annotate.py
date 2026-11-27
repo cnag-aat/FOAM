@@ -69,3 +69,22 @@ def test_best_copy_selected_among_contigs(tmp_path, genome):
     out = run(tmp_path, fa, "--taxon", "arthropoda", "--keep-tmp")
     rep = json.load(open(out + ".report.json"))
     assert rep["selected"].startswith("good")
+
+
+def test_mitos_command_auto(tmp_path, monkeypatch):
+    from foam import mitos as mt
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "runmitos"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    assert mt.mitos_command("auto") == ["runmitos"]
+    assert mt.mitos_command("runmitos.py") == ["runmitos"]      # old config, new MITOS
+    assert mt.mitos_command("python x.py") == ["python", "x.py"]
+    exe.rename(bindir / "runmitos.py")
+    assert mt.mitos_command("runmitos") == ["runmitos.py"]
+    (bindir / "runmitos.py").unlink()
+    import pytest
+    with pytest.raises(mt.MitosError):
+        mt.mitos_command("auto")

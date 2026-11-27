@@ -93,7 +93,7 @@ def annotate_args():
          "--expected-genes", str(config.get("expected_genes", "metazoa")),
          "--refdir", MITOS.get("refdir", os.path.join(BASE, "utils", "refseq_dir")),
          "--refseq", MITOS.get("refseq", "refseq81m"),
-         "--runmitos", "'%s'" % MITOS.get("runmitos", "runmitos.py"),
+         "--runmitos", "'%s'" % MITOS.get("runmitos", "auto"),
          "--max-overlap", str(MITOS.get("max_overlap", 15)),
          "--max-evalue", str(MITOS.get("max_evalue", 0.01)),
          "--parallel", str(MITOS.get("parallel", 2)),

@@ -117,7 +117,7 @@ lineage and takes the mitochondrial genetic code from NCBI Taxonomy.
 
 FOAM needs Snakemake ≥ 9. Snakemake builds the tool environments itself
 (`--use-conda`, from `envs/`): minimap2, seqkit, DIAMOND and FastK
-(`mapping`), flye (`flye`), and MITOS 2.1.3 with Infernal (`mitos`, Linux
+(`mapping`), flye (`flye`), and MITOS 2.1.10 with Infernal (`mitos`, Linux
 only). FOAM's own Python code uses only the standard library.
 
 1. Clone this repository and create a driver environment for Snakemake:
@@ -153,8 +153,9 @@ only). FOAM's own Python code uses only the standard library.
    ./create_config.py --mode reads --tolid ibLobCana --taxon arthropoda \
        --reads reads.ont.fastq.gz --read-type ont-hq
    ```
-   Set `mitos.runmitos` to `runmitos.py` for MITOS 2.1.3 or `runmitos` for
-   ≥ 2.1.7 (`--runmitos` in `create_config.py`).
+   `mitos.runmitos: auto` (the default) runs `runmitos` (MITOS ≥ 2.1.7) or
+   `runmitos.py` (older), whichever is on PATH; `--runmitos` in
+   `create_config.py` sets another command.
 3. Build the conda environments once, on a node with internet access
    (compute nodes often have none). `--conda-prefix` shares one copy
    between runs:
@@ -193,7 +194,7 @@ The steps can also be run by hand, e.g. to (re)annotate a candidate:
 
 ```bash
 bin/foam.py annotate -i candidate.fa -o out/sp_MT --taxon mollusca \
-    --refdir utils/refseq_dir --refseq refseq81m --runmitos runmitos.py
+    --refdir utils/refseq_dir --refseq refseq81m
 ```
 
 `bin/foam.py --help` lists all subcommands (`annotate`, `split-copies`,
@@ -209,7 +210,7 @@ python -m pytest tests
 
 The annotate tests use a fake `runmitos` (`tests/data/fake_runmitos.py`), so
 MITOS is not needed. `foam/` is standard-library-only Python and stays
-compatible with Python 3.6, the version in the MITOS 2.1.3 environment.
+compatible with Python 3.6, so it also runs in an older MITOS 2.1.3 environment.
 
 ## Possible further improvements
 

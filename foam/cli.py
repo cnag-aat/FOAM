@@ -270,7 +270,8 @@ def build_parser():
                    help="mitochondrial genetic code (overrides --taxon)")
     s.add_argument("--refdir", required=True, help="MITOS reference directory (parent)")
     s.add_argument("--refseq", default="refseq81m")
-    s.add_argument("--runmitos", default="runmitos.py")
+    s.add_argument("--runmitos", default="auto",
+                   help="MITOS command; auto = runmitos or runmitos.py, whichever is on PATH")
     s.add_argument("--mitos-opts", default="", help="extra runmitos options")
     s.add_argument("--anchor", nargs="+",
                    help="gene(s) whose 5' end becomes position 1, in order of preference "

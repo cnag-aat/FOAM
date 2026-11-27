@@ -1,10 +1,12 @@
-# MITOS2 annotation + FOAM's annotate step (stdlib-only Python, 3.6 compatible).
-# MITOS 2.1.3 matches the refseq81m/63m databases shipped in utils/refseq_dir.
+# MITOS2 annotation + FOAM's annotate step (stdlib-only Python).
+# MITOS 2.1.10 (Python 3.10+) uses the refseq81m/63m databases in utils/refseq_dir.
 # Bioconda MITOS needs viennarna<2, which is Linux-only.
-# The command is runmitos.py in 2.1.3 and runmitos from 2.1.7 on (config: mitos.runmitos).
+# The command is runmitos from 2.1.7 on (runmitos.py before); FOAM finds either
+# (config mitos.runmitos: auto).
+# 2.1.3 (biopython<1.68, Python 3.6) only solves with flexible channel priority.
 channels:
   - conda-forge
   - bioconda
 dependencies:
-  - mitos=2.1.3
+  - mitos=2.1.10
   - minimap2>=2.24

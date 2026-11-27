@@ -16,13 +16,33 @@ class MitosError(RuntimeError):
     pass
 
 
-def run_mitos(fasta, outdir, code, refdir, refseq, runmitos="runmitos.py",
+_MITOS_NAMES = ("runmitos", "runmitos.py")  # >= 2.1.7, <= 2.1.6
+
+
+def mitos_command(runmitos="auto"):
+    """The MITOS command as a list.
+
+    ``auto`` (or a bare ``runmitos``/``runmitos.py`` that is not on PATH)
+    resolves to whichever of the two names is installed, so one config works
+    with MITOS 2.1.3 and 2.1.10.
+    """
+    words = shlex.split(runmitos or "auto")
+    if words == ["auto"] or (len(words) == 1 and words[0] in _MITOS_NAMES
+                             and not shutil.which(words[0])):
+        for name in _MITOS_NAMES:
+            if shutil.which(name):
+                return [name]
+        raise MitosError("neither runmitos nor runmitos.py is on PATH")
+    return words
+
+
+def run_mitos(fasta, outdir, code, refdir, refseq, runmitos="auto",
               extra_opts="", logfile=None):
-    """Run ``runmitos.py`` (circular mode, no plots) into ``outdir``."""
+    """Run MITOS (circular mode, no plots) into ``outdir``."""
     if os.path.exists(outdir):
         shutil.rmtree(outdir)
     os.makedirs(outdir)
-    cmd = shlex.split(runmitos) + [
+    cmd = mitos_command(runmitos) + [
         "-i", fasta, "-c", str(code), "-o", outdir,
         "-r", refseq, "-R", refdir, "--noplots"] + shlex.split(extra_opts or "")
     log.info("running: %s", " ".join(shlex.quote(c) for c in cmd))

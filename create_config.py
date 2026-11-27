@@ -198,8 +198,9 @@ def main(argv=None):
     g = p.add_argument_group("software")
     g.add_argument("--refdir", default=os.path.join(HERE, "utils", "refseq_dir"))
     g.add_argument("--refseq", default="refseq81m")
-    g.add_argument("--runmitos", default="runmitos.py",
-                   help="MITOS command (runmitos.py for 2.1.3, runmitos for >=2.1.7)")
+    g.add_argument("--runmitos", default="auto",
+                   help="MITOS command; auto = runmitos (>= 2.1.7) or runmitos.py, "
+                        "whichever is on PATH")
     g.add_argument("--threads", type=int, default=16)
     a = p.parse_args(argv)
     cfg = build_config(a)
