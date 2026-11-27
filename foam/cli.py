@@ -120,7 +120,7 @@ def cmd_annotate(a):
     seqio.write_fasta([(seqid, "mitochondrion, complete genome, circular", oseq)], out + ".fa")
     prefix = a.gene_prefix or seqid.replace("_", "")
     ann.write_gff3(ofeats, seqid, len(oseq), out + ".gff3", prefix, a.genetic_code)
-    ann.write_bed(ofeats, seqid, out + ".bed")
+    ann.write_bed(ofeats, seqid, out + ".bed", len(oseq))
     ann.write_table(ofeats, out + ".genes.tsv")
     report = {"foam_version": __version__, "input": os.path.abspath(a.input),
               "contigs": contig_info, "candidates": table, "selected": best,

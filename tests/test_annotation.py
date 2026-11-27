@@ -100,3 +100,15 @@ def test_qc_and_gff(tmp_path):
     txt = out.read_text()
     assert "Is_circular=true" in txt and "transl_table=5" in txt
     assert "product=tRNA-Phe" in txt and "\tCDS\t1\t1500\t" in txt
+
+
+def test_bed_splits_origin_crossing_feature(tmp_path):
+    L = 14024
+    feats = [ann.Feature("cox1", "gene", 0, 1530, 1),
+             ann.Feature("trnK", "tRNA", 13970, 14031, 1, anticodon="ttt")]
+    p = str(tmp_path / "x.bed")
+    ann.write_bed(feats, "mt", p, L)
+    rows = [l.split("\t") for l in open(p).read().splitlines()]
+    assert [(r[1], r[2], r[3]) for r in rows] == [
+        ("0", "7", "trnK(ttt)"), ("0", "1530", "cox1"), ("13970", "14024", "trnK(ttt)")]
+    assert all(int(r[2]) <= L for r in rows)

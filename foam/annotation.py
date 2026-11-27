@@ -484,14 +484,23 @@ def write_gff3(features, seqid, length, path, prefix, transl_table):
         out.write("\n".join(lines) + "\n")
 
 
-def write_bed(features, seqid, path):
+def write_bed(features, seqid, path, length=None):
+    """BED6. With ``length``, a feature crossing the origin of the circular
+    sequence becomes two lines with the same name (end .. length, 0 .. rest),
+    since BED coordinates must lie within the sequence."""
+    rows = []
+    for f in features:
+        sc = 0 if f.score is None else min(1000, int(round(-math.log10(f.score) * 10))
+                                            if f.method == "mitfi" and f.score > 0
+                                            else int(min(1000, f.score)))
+        parts = [(f.start, f.end)]
+        if length and f.end > length:
+            parts = [(f.start, length), (0, f.end - length)]
+        for s, e in parts:
+            rows.append((s, e, f.label(), max(sc, 0), "+" if f.strand > 0 else "-"))
     with open(path, "w") as out:
-        for f in sorted(features, key=lambda x: x.start):
-            sc = 0 if f.score is None else min(1000, int(round(-math.log10(f.score) * 10))
-                                                if f.method == "mitfi" and f.score > 0
-                                                else int(min(1000, f.score)))
-            out.write("%s\t%d\t%d\t%s\t%d\t%s\n" % (seqid, f.start, f.end, f.label(), max(sc, 0),
-                                                   "+" if f.strand > 0 else "-"))
+        for r in sorted(rows):
+            out.write("%s\t%d\t%d\t%s\t%d\t%s\n" % ((seqid,) + r))
 
 
 def write_table(features, path):
