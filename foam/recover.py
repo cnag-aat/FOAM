@@ -61,18 +61,38 @@ def _overlaps(f, feats, L, types=None):
 
 # ------------------------------------------------------------------ rRNA
 def trim_to_neighbours(f, feats, L, min_keep=0.7):
-    """Trim a recovered RNA so it does not overlap tRNAs/genes at its ends."""
+    """Trim a recovered RNA so it overlaps no other feature.
+
+    A neighbour covering one end pushes that end past it; a neighbour lying
+    wholly inside is cut away on whichever side is nearer.  Repeats until
+    nothing overlaps, so the result does not depend on the order of
+    ``feats`` (trimming past one gene can expose the next, e.g.
+    cox1 / trnV / rrnL).  Fails if less than ``min_keep`` remains.
+    """
     orig = f.length
-    for g, o in _overlaps(f, feats, L):
-        if g.type == "rep_origin":
-            continue
-        # does g overlap our left or right end?
-        for shift in (-L, 0, L):
-            gs, ge = g.start + shift, g.end + shift
-            if gs <= f.start < ge:
-                f.start = ge
-            elif gs < f.end <= ge:
-                f.end = gs
+    for _ in range(len(feats) + 1):
+        changed = False
+        for g, o in _overlaps(f, feats, L):
+            if g.type == "rep_origin":
+                continue
+            for shift in (-L, 0, L):
+                gs, ge = g.start + shift, g.end + shift
+                if ge <= f.start or gs >= f.end:
+                    continue
+                if gs <= f.start:
+                    f.start = ge
+                elif ge >= f.end:
+                    f.end = gs
+                elif gs - f.start <= f.end - ge:
+                    f.start = ge
+                else:
+                    f.end = gs
+                changed = True
+                break
+            if changed or f.end - f.start < min_keep * orig:
+                break
+        if not changed or f.end - f.start < min_keep * orig:
+            break
     if f.end - f.start < min_keep * orig:
         return False
     ann.normalize(f, L)

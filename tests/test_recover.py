@@ -52,6 +52,28 @@ def test_trim_rrna_to_neighbours():
     assert (r.start, r.end) == (1060, 2040)
 
 
+
+def test_trim_rrna_order_independent_and_contained():
+    # xgXerMont: cox1 | trnV | rrnL; the untrimmed rrnL starts inside cox1 and
+    # runs over all of trnV. Trimming to cox1 alone left trnV inside rrnL.
+    L = 14024
+    for order in (1, -1):
+        feats = [ann.Feature("cox1", "gene", 0, 1530, 1),
+                 ann.Feature("trnV", "tRNA", 1526, 1587, 1),
+                 ann.Feature("trnL1", "tRNA", 2598, 2659, 1)][::order]
+        r = ann.Feature("rrnL", "rRNA", 1506, 2598, 1, source="ignored.mitos")
+        assert recover.trim_to_neighbours(r, feats, L)
+        assert (r.start, r.end) == (1587, 2598)
+    # a tRNA wholly inside, near the 3' end: cut on that side
+    feats = [ann.Feature("trnX", "tRNA", 1900, 1960, 1)]
+    r = ann.Feature("rrnL", "rRNA", 1000, 2000, 1)
+    assert recover.trim_to_neighbours(r, feats, L) and (r.start, r.end) == (1000, 1900)
+    # a gene in the middle: too much would be lost
+    feats = [ann.Feature("nad1", "gene", 1400, 1600, 1)]
+    r = ann.Feature("rrnL", "rRNA", 1000, 2000, 1)
+    assert not recover.trim_to_neighbours(r, feats, L)
+
+
 def test_recover_rrna_from_ignored():
     L = 5000
     feats = [ann.Feature("trnL1", "tRNA", 1000, 1060, -1)]
