@@ -1,1 +1,7 @@
 /utils/refseq_dir/*
+__pycache__/
+*.pyc
+.pytest_cache/
+.snakemake/
+results/
+logs/

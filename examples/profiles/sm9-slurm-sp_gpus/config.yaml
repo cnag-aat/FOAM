@@ -1,0 +1,40 @@
+# Snakemake 9 profile: every FOAM job on the sp_gpus partition.
+# For when the CPU partitions (all, research, research_long) are down.
+# sp_gpus has no time limit, so no runtime is set and no -t is passed (the
+# slurm plugin warns about the missing runtime; that is expected).  No GPUs
+# are requested.
+#
+# Needs: snakemake>=9 and snakemake-executor-plugin-slurm in the driver env.
+# Use with:
+#   snakemake -s $FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+#       --profile $FOAM/examples/profiles/sm9-slurm-sp_gpus
+# Build the conda envs once on a login node first (compute nodes may have no
+# internet): add --conda-create-envs-only to the same command.
+#
+# Partition/account names are written "'name'": Snakemake evaluates resource
+# values as Python expressions.
+executor: slurm
+jobs: 20
+use-conda: true
+# Share one copy of the conda envs between runs (uncomment and adjust):
+# conda-prefix: /path/to/foam-conda-envs
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+default-resources:
+  slurm_partition: "'sp_gpus'"
+  slurm_account: "'sa_assembly'"
+  mem_mb: 8000
+set-resources:
+  prefilter_reads:
+    mem_mb: 16000
+  select_reads:
+    mem_mb: 16000
+  flye_assembly:
+    mem_mb: 64000
+  polish:
+    mem_mb: 32000
+  annotate_draft:
+    mem_mb: 16000
+  annotate_final:
+    mem_mb: 16000

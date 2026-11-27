@@ -1,0 +1,65 @@
+# Snakemake 9 profile for the CNAG cluster's CPU partitions:
+#   all            <= 1 h
+#   research       <= 12 h
+#   research_long  no limit
+# Each rule gets a partition and a runtime (minutes) that fits that
+# partition's limit.  If a step outgrows its partition on a big sample, move
+# it up here (or on the command line, e.g.
+#   --set-resources polish:slurm_partition=research_long polish:runtime=2880).
+#
+# Needs: snakemake>=9 and snakemake-executor-plugin-slurm in the driver env.
+# Use with:
+#   snakemake -s $FOAM/bin/foam.smk --configfile ibLobCana.foam.yaml \
+#       --profile $FOAM/examples/profiles/sm9-slurm-cnag
+# Build the conda envs once on a login node first (compute nodes may have no
+# internet): add --conda-create-envs-only to the same command.
+#
+# Partition/account names are written "'name'": Snakemake evaluates resource
+# values as Python, and a bare  all  would be Python's all() function.
+executor: slurm
+jobs: 20
+use-conda: true
+# Share one copy of the conda envs between runs (uncomment and adjust):
+# conda-prefix: /path/to/foam-conda-envs
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+default-resources:
+  slurm_partition: "'all'"
+  slurm_account: "'sa_assembly'"
+  mem_mb: 8000
+  runtime: 60
+set-resources:
+  seed_proteins:          # write the seed proteins, diamond makedb
+    mem_mb: 4000
+    runtime: 30
+  double_bait:
+    mem_mb: 2000
+    runtime: 10
+  prefilter_reads:        # one pass over all reads (minimap2 or DIAMOND)
+    slurm_partition: "'research_long'"
+    mem_mb: 16000
+    runtime: 10080
+  select_reads:           # FastK on the candidate reads
+    slurm_partition: "'research'"
+    mem_mb: 16000
+    runtime: 240
+  flye_assembly:          # mito reads only
+    slurm_partition: "'research'"
+    mem_mb: 64000
+    runtime: 720
+  candidates:
+    mem_mb: 8000
+    runtime: 60
+  annotate_draft:         # MITOS on each unique tandem copy
+    slurm_partition: "'research'"
+    mem_mb: 16000
+    runtime: 360
+  polish:
+    slurm_partition: "'research'"
+    mem_mb: 32000
+    runtime: 720
+  annotate_final:
+    slurm_partition: "'research'"
+    mem_mb: 16000
+    runtime: 360

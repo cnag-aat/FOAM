@@ -1,308 +1,404 @@
-from datetime import datetime
-import re
+"""FOAM: assemble/finish complete circular mitogenomes from long reads.
+
+Starting points (config key ``mode``):
+
+  reads    pass 1: seed (bait mitogenome, or conserved mito proteins when no
+                   bait) -> candidate reads -> select reads -> flye -> draft
+           pass 2: the sample's own draft is the bait -> candidate reads ->
+                   select reads -> flye -> draft        (fishing.second_pass)
+           -> flye polish with the last pass's reads -> final annotate
+  flye     flye contig(s) + reads: the contigs are the (self) bait ->
+           candidate reads -> select reads -> draft -> polish -> final annotate
+  hifiasm  hifiasm contig(s) or a whole assembly -> candidates -> final
+           annotate (no reads, no polishing)
+
+Read selection (fishing.method):
+  kmer       permissive prefilter, then keep reads made of k-mers at
+             mitochondrial coverage (rejects NUMT-carrying reads by coverage)
+  alignment  keep reads whose alignments cover most of the read (FOAM 0.8)
+
+Needs Snakemake >= 9.  Write a config with ``create_config.py`` and run e.g.
+
+  snakemake -s bin/foam.smk --configfile sp.foam.yaml --use-conda -j 16
+  snakemake -s bin/foam.smk --configfile sp.foam.yaml \
+      --profile examples/profiles/sm9-slurm-cnag        # SLURM
+"""
+
 import os
-import subprocess # important to call pre-existing modules
 
-#########################################################################
-# This version v0.5 works well and has been tested on the rMalMon genome
-#########################################################################
+from snakemake.utils import min_version
 
-#1- allows to call subworkflows (modules)
-module polish_workflow:
-  snakefile: "../modules/polish.rules.smk"
-#evaluate_assemblies.rules.smk
-module evaluate_assemblies_workflow:
-  snakefile: "../modules/evaluate_assemblies.rules.smk"
+min_version("9.0")
+
+BASE = os.path.abspath(os.path.join(workflow.basedir, ".."))
+FOAM = "python {}/bin/foam.py".format(BASE)
+
+MODE = config["mode"]
+if MODE not in ("reads", "flye", "hifiasm"):
+    raise ValueError("config 'mode' must be reads, flye or hifiasm (got %r)" % MODE)
+
+TOLID = config["tolid"]
+INP = config.get("inputs", {})
+READS = INP.get("reads") or []
+if isinstance(READS, str):
+    READS = [READS]
+FISH = config.get("fishing", {})
+KMER = FISH.get("kmer", {})
+FLYE = config.get("flye", {})
+MITOS = config.get("mitos", {})
+CAND = config.get("candidates", {})
+TAND = config.get("tandem", {})
+THREADS = config.get("threads", {})
+KEEP = config.get("keep_intermediate", False)
+METHOD = FISH.get("method", "kmer")
+if METHOD not in ("kmer", "alignment"):
+    raise ValueError("fishing.method must be kmer or alignment")
+
+if MODE in ("reads", "flye") and not READS:
+    raise ValueError("mode %s needs inputs.reads" % MODE)
+if MODE in ("flye", "hifiasm") and not INP.get("contigs"):
+    raise ValueError("mode %s needs inputs.contigs" % MODE)
 
 
-#2- main snakemake rules
-date = datetime.now().strftime('%Y%m%d.%H%M%S')
-#get the bin path for the snakemake file
-bin_path = sys.path[0]
-#make scripts and utils relative to bin
-scripts_dir = bin_path + "/../scripts/"
-utils_dir = bin_path + "/../utils/"
-keepfiles = False
-work_dir = os.getcwd() + "/"
-logs_dir = work_dir + "logs/"
-if not os.path.exists(logs_dir):
- os.makedirs(logs_dir)
+def bait_fasta():
+    if INP.get("bait"):
+        return INP["bait"]
+    if INP.get("taxid") and INP.get("ncbi_email"):
+        return "results/bait/bait.fa"
+    return None
 
 
-rule format_mito_ref:
-  input:
-    reference = config["data"]["reference_fasta"],
-  output:
-    mitoref = work_dir + "s01.1_p00_ref_MT/MT_REF.scaffolds.fa",
-  params:
-    scripts = scripts_dir,
-  log:
-    logs_dir+ str(date) + ".j%j.format_mito_ref.out",
-    logs_dir+ str(date) + ".j%j.format_mito_ref.err",
-  threads: 1
-  shell:
-    # Just rename it and format the fasta as multiline
-    "mkdir -p s01.1_p00_ref_MT; "
-    "cd s01.1_p00_ref_MT/; "
-    "ln -s {input.reference} . ;"
-    "{params.scripts}rename_fasta_seq.pl -f  {input.reference} -n MT_REF | {params.scripts}FastaToTbl | {params.scripts}TblToFasta > {output.mitoref} ;"
-    "echo 'reference mitogenome has been formatted into a multiline fasta'; "
+SEED = FISH.get("seed", "auto")
+if SEED == "auto":
+    SEED = "bait" if bait_fasta() else "genes"
+if MODE == "reads" and SEED == "bait" and not bait_fasta():
+    raise ValueError("fishing.seed is 'bait' but there is no inputs.bait or inputs.taxid+ncbi_email")
 
-rule orient_reference_MT:
-  input:
-    genome = rules.format_mito_ref.output.mitoref,
-  output:
-    oriented = work_dir + "s01.1_p00_ref_MT/out/MT_REF.scaffolds.oriented.fa", 
-    annotation = work_dir + "s01.1_p00_ref_MT/out/annotation_2/result.gff",
-    formatted = work_dir + "s01.1_p00_ref_MT/out/MT_REF.formatted.fa"
-  params:
-    scripts = scripts_dir,
-    refseq_dir = utils_dir + "refseq_dir/",
-    genetic_code = config["annotation"]["genetic_code"],
-    mitos_options = config["annotation"]["mitos_options"],
-    refseq_db = config["annotation"]["refseq_database"],
-  conda:
-    "../envs/mitos.yaml"
-  threads: 8
-  log:
-    logs_dir+ str(date) + ".j%j.orient_reference_MT.out",
-    logs_dir+ str(date) + ".j%j.orient_reference_MT.err",
-  shell:
-    "echo workdir is ; "
-    "/usr/bin/pwd ; "
-    "cd s01.1_p00_ref_MT/ ; "
-   
-    #1. Annotation 1
-    "echo 'testing mitos conda environment' ; "
-    "runmitos.py --version ; "
-    "mkdir -p annotation_1 ; "
-    "runmitos.py -i {input.genome} -c {params.genetic_code} {params.mitos_options} -r {params.refseq_db} -R {params.refseq_dir} -o annotation_1 ; "
-    
-    #3. Orient based in Annotation set trnF start
-    "perl {params.scripts}orient_mitogenome_v1.pl  -f {input.genome} -b annotation_1/result.bed ; "
-    "mkdir -p out/annotation_2 ; "
-    "mv MT_REF.scaffolds.oriented.fa out/ ; "
-    #4. rename and format to ensure multiline fasta
-     "cd out ; "
-     "{params.scripts}rename_fasta_seq.pl -f  {output.oriented} -n MT_REF_oriented | {params.scripts}FastaToTbl | {params.scripts}TblToFasta > {output.formatted}; "
-    # 5. Reannotate formatted mitogenome
-      "runmitos.py -i {output.formatted} -c {params.genetic_code} {params.mitos_options} -r {params.refseq_db} -R {params.refseq_dir} -o annotation_2 ; "
-    # 6. symbolic link to out file  
-    "cd .. ; "
-    "ln -s {output.formatted} . ; "
-  
-rule filter_ont_max_len:
-  input:
-    reads = config["data"]["ont"],
-  output:
-    reads = work_dir + "s02.1_p01.1_filtered_long_reads/ont_maxlen.fastq.gz",
-  params:
-    scripts = scripts_dir,
-    max_len = config["parameters"]["max_read_length"]
-  conda:
-   "../envs/pigz-2.6.yaml"
-  threads: 4
-  log:
-    logs_dir+ str(date) + ".j%j.filter_ont_max_len.out",
-    logs_dir+ str(date) + ".j%j.filter_ont_max_len.err",
-  shell:
-    #example
-    "echo \"mitochondrial reference name is {params.max_len}\";"
-    "zcat -f {input.reads} | perl {params.scripts}filter_by_max_length_fastq.pl -max_len {params.max_len} | pigz -p {threads} -c > {output.reads} ;"
+# last fishing pass, whose draft gets polished
+LAST = 2 if (MODE == "reads" and FISH.get("second_pass", True)) else 1
+FINAL = "results/final/%s_MT" % TOLID
 
-rule align_ont_to_mitoref:
-  input:
-    genome = rules.format_mito_ref.output.mitoref,
-    reads = rules.filter_ont_max_len.output.reads
-  output:
-    ont_mito_fq = work_dir + "s03.1_p02.1_map_long_reads/ont_mito.fastq"
-  params:
-    align_opts = config["parameters"]["minimap2_opts"],
-    tmp = work_dir + "tmp/minimap2.paf",
-    read_list = work_dir +  "tmp/mito_readids.txt",
-    scripts = scripts_dir,
-    min_match = config["parameters"]["ontfilter_minmatch"],
-    min_qual = config["parameters"]["ontfilter_minq"],
-  conda:
-   "../envs/fa5f7adcb4c59485a3a283d809e1402e.yaml"
-  threads: 8
-  log:
-    logs_dir+ str(date) + ".j%j.align_ont_to_mito_ref.out",
-    logs_dir+ str(date) + ".j%j.align_ont_to_mito_ref.err",
-  shell:
-    "mkdir -p tmp; "
-    "mkdir -p s03.1_p02.1_map_long_reads/; "
-    "cd  s03.1_p02.1_map_long_reads/; "
-    #getting REFNAME for fishing reads
-    "REFNAME=$( grep \'>\' {input.genome} | sed \'s/>//g\'); "
-    "echo \"mitochondrial reference name is $REFNAME\";"
+wildcard_constraints:
+    p="[12]",
 
-    # pipe to get a sam with the aligned reads to the mitogenome reference calling the md tag
-   # "minimap2 {params.align_opts} -t {threads} {input.genome} {input.reads} | samtools calmd -S - {input.genome} > {params.tmp};" # specify the output sam is now in the tmpdir
-     "minimap2 {params.align_opts} -t {threads} {input.genome} {input.reads}  > {params.tmp};"
-    "cat {params.tmp} | awk '$11 >= {params.min_match} && $12>={params.min_qual}' | cut -f 1 | sort -u > {params.read_list};"
-     "zcat {input.reads} | {params.scripts}filter_reads.pl -l {params.read_list} -a > {output.ont_mito_fq};"
-    # CAPTURE READS 1. Using defaults here. my $minmatch = 800 (hard-coded in perl-script) and $minqual = 12 (parameter in perlscript) 
-  #  "perl --version ;"
-  #  "ls -l {params.scripts}sam_id_filter_v02.pl ;"
-  #  "{params.scripts}sam_id_filter_v02.pl -ref $REFNAME -m {params.min_match} -q {params.min_qual} <  {params.tmp} > ont.clean.fastq 2> {output.ont_mito_fq} ;"
-    
-rule flye_assembly_meta:
-  input:
-    reads = rules.align_ont_to_mitoref.output.ont_mito_fq
-  output:
-    assembly = work_dir+"s04.1_p03.1_flye_assembly/flye_meta.fa",
-    info = work_dir+"s04.1_p03.1_flye_assembly/flye_meta_info.txt",
-    png = work_dir+"s04.1_p03.1_flye_assembly/flye_meta.png",
-    circular_contig = work_dir+"s04.1_p03.1_flye_assembly/circular_contig.fa",
-    circular_bed = work_dir+"s04.1_p03.1_flye_assembly/circular_contig.bed",
-  params:
-    scripts = scripts_dir,
-    out_dir = work_dir+"s04.1_p03.1_flye_assembly/",
-    assembly_opts = config["parameters"]["flye_opts"],
-    ref_len = config["parameters"]["reference_length"],
-    len_var = config["parameters"]["mito_length_variation"],
-    read_type = config["parameters"]["flye_reads"],
-  conda:
-    "../envs/36b7263cd61f32e4e9f7db777993cd52.yaml"   
-  threads: 16
-  log:
-    logs_dir+ str(date) + ".j%j.flye_assembly.out",
-    logs_dir+ str(date) + ".j%j.flye_assembly.err",
-  shell:
-    "mkdir -p {params.out_dir}out; "
-    "cd {params.out_dir}; "
-    #added --resume options to avoid redoing flye if computed successfuly (see assembly_opts under rule params)
-    "echo 'Running command: flye {params.assembly_opts} -g {params.ref_len} -o {params.out_dir}out -t {threads} --nano-raw {input.reads}'; "
-    "flye {params.assembly_opts} -g {params.ref_len} -o {params.out_dir}out -t {threads} {params.read_type} {input.reads}; "
-    "ln -s {params.out_dir}out/assembly.fasta {output.assembly}; "
-    "ln -s {params.out_dir}out/assembly_info.txt {output.info}; "
-    "export XDG_RUNTIME_DIR=$PWD ;" # to avoid Bandage execution error
-    "Bandage image {params.out_dir}out/assembly_graph.gfa {output.png}; "    
-    "echo 'Selecting the circular contig with length between {params.ref_len}-{params.len_var} and {params.ref_len}+{params.len_var}'; "
-    "circular=$(cat {output.info} | gawk \'{{ if ( ($4 == \"Y\") &&  ($2 >= ({params.ref_len}-{params.len_var})) && ($2 <= ({params.ref_len}+{params.len_var})) )   print $1}}\') ; " #double brackets to make it work
-    "echo circular contig\(s\)\: $circular ;"
-    "{params.scripts}select_contig.pl -f {output.assembly} -t $circular > {output.circular_contig} ; "
-    # want to store the coordinates and name of coordinate contig to pass it to samtools in next rule align_illumina_flye_meta
-    "{params.scripts}fastalength {output.circular_contig} | gawk \'{{ print $2\"\t\"0\"\t\"$1}}\'  > {output.circular_bed} ; "
 
-# new rule to orient the polsihed mitogenome based on the mitos annotation. uses script orient_circular_contig_v1.pl 
-rule orient_circular_contig:
-  input:
-    genome = rules.flye_assembly_meta.output.circular_contig,
-  output:
-    oriented = work_dir + "s05.1_p04.1_orient_circular_contig/out/circular_contig.oriented.fa",
-    annotation = work_dir + "s05.1_p04.1_orient_circular_contig/annotation/result.gff",
-    reannotation = work_dir + "s05.1_p04.1_orient_circular_contig/out/annotation_oriented/result.gff"
-#    formatted = work_dir + "s03.1_p02.1_orient_circular_contig/out/formatted.fa",
-  params:
-    scripts = scripts_dir,
-    refseq_dir = utils_dir + "refseq_dir/",
-    genetic_code = config["annotation"]["genetic_code"],
-    mitos_options = config["annotation"]["mitos_options"],
-    refseq_db = config["annotation"]["refseq_database"],
-   # tolid = config["parameters"]["tolid"],
-  conda:
-    "../envs/mitos.yaml"
-  threads: 8
-  log:
-    logs_dir+ str(date) + ".j%j.orient_circular_ctg.out",
-    logs_dir+ str(date) + ".j%j.orient_circular_ctg.err",
-  shell:
-    "cd  s05.1_p04.1_orient_circular_contig ; "
-   
-    #1. link circular contig polished with flye (default is 1 iteration) 
-    "ln -s {input.genome} circular_contig.fa ; "
+def maybe_temp(path):
+    return path if KEEP else temp(path)
 
-    #2. Annotation 1
-    "echo 'testing mitos conda environment' ; "
-    "runmitos.py --version ; "
-    "mkdir -p annotation ; "
-    "runmitos.py -i circular_contig.fa -c {params.genetic_code} {params.mitos_options} -r {params.refseq_db} -R {params.refseq_dir} -o annotation ; "
-    
-    #3. Orient based in Annotation set trnF start
-    "perl {params.scripts}orient_mitogenome_v1.pl  -f circular_contig.fa -b annotation/result.bed ; "
-    "mkdir -p out/ ; "
-    "mv circular_contig.oriented.fa out/; "
-    #4. rename and format to ensure multiline fasta
-     "cd out/; "
-    # "{params.scripts}rename_fasta_seq.pl -f  {output.oriented} -n {params.tolid}_MT | {params.scripts}FastaToTbl | {params.scripts}TblToFasta > {output.formatted} ;"
-    #5. Reannotate formatted mitogenome
-    "mkdir -p out/annotation_oriented ; "
-    "runmitos.py -i {output.oriented} -c {params.genetic_code} {params.mitos_options} -r {params.refseq_db} -R {params.refseq_dir} -o annotation_oriented ; "
-    # 6. format annotation gff and copy final fasta 
-    #  "cd ../ ; "
-    #  "cp {output.formatted}  {params.tolid}_MT.fa ; "
-     # "{params.scripts}parse_mitos_gff.pl -g {output.annotation} -p MT{params.tolid} > MT{params.tolid}.gff3 ; "
 
-rule flye_polishing:
-  input:
-    circular = rules.orient_circular_contig.output.oriented,
-    reads = rules.align_ont_to_mitoref.output.ont_mito_fq
-  output:
-    assembly = work_dir+"s06.1_p05.1_flye_polishing/oriented.polished.fa",
-  params:
-    scripts = scripts_dir,
-    out_dir = work_dir+"s06.1_p05.1_flye_polishing/",
-    polish_opts = config["parameters"]["polishing_flye"],
-    ref_len = config["parameters"]["reference_length"],
-    read_type = config["parameters"]["flye_reads"],
-  conda:
-    "../envs/36b7263cd61f32e4e9f7db777993cd52.yaml"   
-  threads: 16
-  log:
-    logs_dir+ str(date) + ".j%j.flye_polishing.out",
-    logs_dir+ str(date) + ".j%j.flye_polishing.err",
-  shell:
-    "mkdir -p {params.out_dir}out; "
-    "cd {params.out_dir}; "
-    "ln -s {input.circular} . ; "
-    #added --resume options to avoid redoing flye if computed successfuly (see assembly_opts under rule params)
-    "echo 'Running command: flye {params.polish_opts} -g {params.ref_len} -o {params.out_dir}out -t {threads} {params.read_type} {input.reads} '; "
-    "flye {params.polish_opts} -g {params.ref_len} -o {params.out_dir}out -t {threads} {params.read_type} {input.reads} --polish-target circular_contig.oriented.fa; "
-    "ln -s {params.out_dir}out/polished_1.fasta {output.assembly}; "
-    
-# Finalize mitogenome rename using  ToLID and annotating it
+def annotate_args():
+    a = ["--taxon", config["taxon"],
+         "-c", str(config["genetic_code"]),
+         "--anchor"] + list(config["anchor"]) + [
+         "--expected-genes", str(config.get("expected_genes", "metazoa")),
+         "--refdir", MITOS.get("refdir", os.path.join(BASE, "utils", "refseq_dir")),
+         "--refseq", MITOS.get("refseq", "refseq81m"),
+         "--runmitos", "'%s'" % MITOS.get("runmitos", "auto"),
+         "--max-overlap", str(MITOS.get("max_overlap", 15)),
+         "--max-evalue", str(MITOS.get("max_evalue", 0.01)),
+         "--parallel", str(MITOS.get("parallel", 2)),
+         "--min-period", str(TAND.get("min_period", 5000))]
+    if MITOS.get("options"):
+        a += ["--mitos-opts", "'%s'" % MITOS["options"]]
+    if not TAND.get("resolve", True):
+        a.append("--no-tandem")
+    if MITOS.get("keep_origins"):
+        a.append("--keep-origins")
+    return " ".join(a)
 
-rule final_mitogenome:
-  input:
-    genome = rules.flye_polishing.output.assembly,
-  output:
-    annotation = work_dir + "s07.1_p06.1_final_MT/out/annotation/result.gff",
-    formatted = work_dir + "s07.1_p06.1_final_MT/out/formatted.fa",
-    done=touch("final_mitogenome.done")
-  params:
-    scripts = scripts_dir,
-    refseq_dir = utils_dir + "refseq_dir/",
-    genetic_code = config["annotation"]["genetic_code"],
-    mitos_options = config["annotation"]["mitos_options"],
-    refseq_db = config["annotation"]["refseq_database"],
-    tolid = config["parameters"]["tolid"],
-  conda:
-    "../envs/mitos.yaml"
-  threads: 8
-  log:
-    logs_dir+ str(date) + ".j%j.final_mitogenome.out",
-    logs_dir+ str(date) + ".j%j.final_mitogenome.err",
-  shell:
-    "mkdir -p  s07.1_p06.1_final_MT/out/annotation ; "
-    "cd  s07.1_p06.1_final_MT ; "
 
-    # 1. link polished contig 
-    "ln -s {input.genome} . ; "
+rule all:
+    input:
+        expand(FINAL + ".{ext}", ext=["fa", "gff3", "bed", "genes.tsv", "report.json"]),
 
-    # 2. rename and format to ensure multiline fasta
-     "cd out/; "
-     "{params.scripts}rename_fasta_seq.pl -f  {input.genome} -n {params.tolid}_MT | {params.scripts}FastaToTbl | {params.scripts}TblToFasta > {output.formatted} ;"
-   
-    # 3. Reannotate formatted mitogenome
-      "runmitos.py -i {output.formatted} -c {params.genetic_code} {params.mitos_options} -r {params.refseq_db} -R {params.refseq_dir} -o annotation ; "
-   
-    # 4. format annotation gff and copy final fasta 
-      "cd ../ ; "
-      "cp {output.formatted}  {params.tolid}_MT.fa ; "
-      "{params.scripts}parse_mitos_gff.pl -g {output.annotation} -p MT{params.tolid} > MT{params.tolid}.gff3 ; "
 
-    
+localrules: all, fetch_bait
 
-# PENDING TO ADD MERQURY SUBWORKFLOW USING A INPUT ASSEMBLY DICTIONARY...
+
+# ----------------------------------------------------------------- seeds
+rule fetch_bait:
+    """Closest complete mitogenome(s) in NCBI (needs internet: local rule)."""
+    output:
+        "results/bait/bait.fa",
+    params:
+        taxid=INP.get("taxid"),
+        email=INP.get("ncbi_email"),
+    log:
+        "logs/fetch_bait.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "{FOAM} fetch-bait --taxid {params.taxid} --email {params.email} "
+        "-o {output} > {log} 2>&1"
+
+
+rule seed_proteins:
+    """Conserved mitochondrial proteins from the MITOS reference set: a seed
+    that needs no related mitogenome and ignores gene order/control region."""
+    output:
+        fa="results/seed/proteins.fa",
+        db="results/seed/proteins.dmnd",
+    params:
+        refdir=MITOS.get("refdir", os.path.join(BASE, "utils", "refseq_dir")),
+        refseq=MITOS.get("refseq", "refseq81m"),
+        genes=FISH.get("seed_genes", "cox1,cox2,cox3,cob,nad1,nad4,nad5"),
+    log:
+        "logs/seed_proteins.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "{FOAM} seed-proteins --refdir {params.refdir} --refseq {params.refseq} "
+        "--genes {params.genes} -o {output.fa} > {log} 2>&1; "
+        "diamond makedb --in {output.fa} -d {output.db} >> {log} 2>&1"
+
+
+def bait_source(wc):
+    if wc.p == "2":
+        return "results/pass1/draft_MT.fa"          # the sample's own draft
+    if MODE == "flye":
+        return "results/pass1/candidates.fa"        # the user's flye contigs
+    return bait_fasta()
+
+
+rule double_bait:
+    input:
+        bait_source,
+    output:
+        maybe_temp("results/pass{p}/bait.doubled.fa"),
+    log:
+        "logs/double_bait.pass{p}.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "{FOAM} double-bait -i {input} -o {output} > {log} 2>&1"
+
+
+# ----------------------------------------------------------------- fishing
+def prefilter_inputs(wc):
+    d = {"reads": READS}
+    if wc.p == "1" and MODE == "reads" and SEED == "genes":
+        d["db"] = rules.seed_proteins.output.db
+    else:
+        d["bait"] = "results/pass%s/bait.doubled.fa" % wc.p
+    return d
+
+
+def prefilter_cmd(wc, input, output, threads):
+    """Shell for the first, cheap read screen.  With fishing.method=kmer it
+    is deliberately permissive; the k-mer step does the real selection."""
+    if "db" in input.keys():
+        loop = " ".join(
+            "diamond blastx -d {db} -q {r} --query-gencode {c} -F 15 --range-culling -k 1 "
+            "--evalue 1e-5 --outfmt 6 qseqid -p {t} --quiet >> {raw};".format(
+                db=input.db, r=r, c=config["genetic_code"], t=threads, raw=output.ids + ".raw")
+            for r in input.reads)
+        return "rm -f {raw}; {loop} sort -u {raw} > {ids}; rm -f {raw}".format(
+            raw=output.ids + ".raw", loop=loop, ids=output.ids)
+    if METHOD == "kmer":
+        filt = "--min-read-frac 0 --min-identity 0 --min-aln {} --min-len {}".format(
+            FISH.get("prefilter_min_aln", 300), FISH.get("min_len", 1000))
+    else:
+        filt = "--min-read-frac {} --min-aln {} --min-identity {} --min-len {} --max-len {}".format(
+            FISH.get("min_read_frac", 0.8), FISH.get("min_aln", 1000),
+            FISH.get("min_identity", 0.7), FISH.get("min_len", 1000), FISH.get("max_len", 0))
+    return ("minimap2 -x {preset} --secondary=no -t {t} {bait} {reads} "
+            "| {foam} fish-filter {filt} > {ids}").format(
+        preset=FISH.get("minimap2_preset", "map-ont"), t=threads, bait=input.bait,
+        reads=" ".join(input.reads), foam=FOAM, filt=filt, ids=output.ids)
+
+
+rule prefilter_reads:
+    """Stream all reads once; write only IDs and the (small) candidate set."""
+    input:
+        unpack(prefilter_inputs),
+    output:
+        ids=temp("results/pass{p}/candidate_ids.txt"),
+        reads=temp("results/pass{p}/candidate_reads.fastq.gz"),
+    params:
+        cmd=prefilter_cmd,
+    threads: THREADS.get("fish", 16)
+    log:
+        "logs/prefilter_reads.pass{p}.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "({params.cmd}) 2> {log}; "
+        "seqkit grep -j {threads} -f {output.ids} {input.reads} -o {output.reads} 2>> {log}; "
+        "echo \"$(wc -l < {output.ids}) candidate reads\" >> {log}"
+
+
+rule select_reads:
+    """k-mer abundance selection (method kmer) or pass-through (alignment)."""
+    input:
+        "results/pass{p}/candidate_reads.fastq.gz",
+    output:
+        reads=maybe_temp("results/pass{p}/mito_reads.fastq.gz"),
+        report="results/pass{p}/read_selection.json",
+    params:
+        ids="results/pass{p}/mito_read_ids.txt",
+        kopts="-k {} --sampling {} --coverage-fraction {} --min-score-fraction {} "
+              "--backend {} --memory {}".format(
+            KMER.get("k", 21), KMER.get("sampling", 8), KMER.get("coverage_fraction", 0.2),
+            KMER.get("min_score_fraction", 0.5), KMER.get("backend", "auto"),
+            KMER.get("memory_gb", 4)),
+        tmp="results/pass{p}",
+    threads: THREADS.get("kmer", 8)
+    log:
+        "logs/select_reads.pass{p}.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        ("{FOAM} kmer-select {input} -o {params.ids} --report {output.report} {params.kopts} "
+         "-t {threads} --tmpdir {params.tmp} "
+         "> {log} 2>&1; seqkit grep -f {params.ids} {input} -o {output.reads} 2>> {log}; "
+         "rm -f {params.ids}") if METHOD == "kmer" else
+        ("cp {input} {output.reads}; echo '{{\"method\": \"alignment\"}}' > {output.report}")
+
+
+# ----------------------------------------------------------------- assemble
+rule flye_assembly:
+    input:
+        reads="results/pass{p}/mito_reads.fastq.gz",
+    output:
+        fasta="results/pass{p}/flye/assembly.fasta",
+        info="results/pass{p}/flye/assembly_info.txt",
+        gfa="results/pass{p}/flye/assembly_graph.gfa",
+    params:
+        flag=FLYE.get("read_flag", "--nano-hq"),
+        opts=FLYE.get("options", "--meta"),
+        tmp="results/pass{p}/flye/run",
+    threads: THREADS.get("flye", 16)
+    log:
+        "logs/flye_assembly.pass{p}.log",
+    conda:
+        "../envs/flye.yaml"
+    shell:
+        "rm -rf {params.tmp}; "
+        "flye {params.flag} {input.reads} -o {params.tmp} -t {threads} {params.opts} > {log} 2>&1; "
+        "for f in assembly.fasta assembly_info.txt assembly_graph.gfa flye.log; do "
+        "mv {params.tmp}/$f results/pass{wildcards.p}/flye/; done; "
+        "rm -rf {params.tmp}"
+
+
+def candidate_inputs(wc):
+    d = {}
+    if MODE == "reads":
+        d["fasta"] = "results/pass%s/flye/assembly.fasta" % wc.p
+        d["info"] = "results/pass%s/flye/assembly_info.txt" % wc.p
+    else:
+        d["fasta"] = INP["contigs"]
+        if INP.get("flye_info"):
+            d["info"] = INP["flye_info"]
+    b = bait_fasta()
+    if b and MODE != "flye":
+        d["bait"] = b
+    return d
+
+
+def candidate_args(wc, input):
+    a = ["--length-tolerance", str(CAND.get("length_tolerance", 0.25)),
+         "--max-copies", str(CAND.get("max_copies", 4)),
+         "--min-bait-cov", str(CAND.get("min_bait_cov", 0.3))]
+    if config.get("expected_length"):
+        a += ["--expected-length", str(config["expected_length"])]
+    if "bait" in input.keys():
+        a += ["--length-from", input.bait]
+        if MODE == "hifiasm":           # screen a whole assembly against the bait
+            a += ["--bait", input.bait]
+    if "info" in input.keys():
+        a += ["--flye-info", input.info]
+    elif MODE == "flye" or not CAND.get("require_circular", True):
+        a.append("--allow-linear")
+    if INP.get("contig_names") and MODE != "reads":
+        a += ["--names"] + list(INP["contig_names"])
+    return " ".join(a)
+
+
+rule candidates:
+    input:
+        unpack(candidate_inputs),
+    output:
+        fasta="results/pass{p}/candidates.fa",
+        json="results/pass{p}/candidates.fa.json",
+    params:
+        args=candidate_args,
+    threads: 4
+    log:
+        "logs/candidates.pass{p}.log",
+    conda:
+        "../envs/mapping.yaml"
+    shell:
+        "{FOAM} candidates -i {input.fasta} -o {output.fasta} -t {threads} {params.args} "
+        "> {log} 2>&1"
+
+
+# ----------------------------------------------------------------- annotate / polish
+rule annotate_draft:
+    """Split tandem copies, annotate, keep the most complete copy, orient."""
+    input:
+        "results/pass{p}/candidates.fa",
+    output:
+        fa="results/pass{p}/draft_MT.fa",
+        report="results/pass{p}/draft_MT.report.json",
+    params:
+        args=annotate_args(),
+        prefix="results/pass{p}/draft_MT",
+        seqid="%s_MT_draft" % TOLID,
+        work="results/pass{p}/annotate_work",
+    threads: THREADS.get("annotate", 4)
+    log:
+        "logs/annotate_draft.pass{p}.log",
+    conda:
+        "../envs/mitos.yaml"
+    shell:
+        "{FOAM} annotate -i {input} -o {params.prefix} --seqid {params.seqid} "
+        "--workdir {params.work} -t {threads} {params.args} > {log} 2>&1"
+
+
+rule polish:
+    """flye polishing of the chosen copy with the last pass's reads.  The
+    copy is rotated by half its length first so the linear ends (poorly
+    polished) are away from the start gene; the final step re-orients."""
+    input:
+        target="results/pass%d/draft_MT.fa" % LAST,
+        reads="results/pass%d/mito_reads.fastq.gz" % LAST,
+    output:
+        "results/polish/polished.fa",
+    params:
+        flag=FLYE.get("read_flag", "--nano-hq"),
+        iters=FLYE.get("polish_iterations", 1),
+        tmp="results/polish/run",
+        rotated="results/polish/target.rotated.fa",
+    threads: THREADS.get("flye", 16)
+    log:
+        "logs/polish.log",
+    conda:
+        "../envs/flye.yaml"
+    shell:
+        "rm -rf {params.tmp}; "
+        "python {BASE}/bin/foam.py rotate --half -i {input.target} -o {params.rotated} 2> {log}; "
+        "flye --polish-target {params.rotated} {params.flag} {input.reads} "
+        "-i {params.iters} -o {params.tmp} -t {threads} >> {log} 2>&1; "
+        "mv {params.tmp}/polished_{params.iters}.fasta {output}; "
+        "rm -rf {params.tmp} {params.rotated}"
+
+
+rule annotate_final:
+    input:
+        "results/pass1/candidates.fa" if MODE == "hifiasm" else "results/polish/polished.fa",
+    output:
+        expand(FINAL + ".{ext}", ext=["fa", "gff3", "bed", "genes.tsv", "report.json"]),
+    params:
+        args=annotate_args(),
+        prefix=FINAL,
+        seqid="%s_MT" % TOLID,
+        work="results/final/work",
+        keep="--keep-mitos" if KEEP else "",
+    threads: THREADS.get("annotate", 4)
+    log:
+        "logs/annotate_final.log",
+    conda:
+        "../envs/mitos.yaml"
+    shell:
+        "{FOAM} annotate -i {input} -o {params.prefix} --seqid {params.seqid} "
+        "--workdir {params.work} -t {threads} {params.keep} {params.args} > {log} 2>&1"

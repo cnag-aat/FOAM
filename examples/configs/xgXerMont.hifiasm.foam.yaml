@@ -1,0 +1,49 @@
+# FOAM config written by create_config.py
+tolid: "xgXerMont"
+mode: "hifiasm"
+taxon: "mollusca"
+genetic_code: 5
+anchor: ["cox1"]
+expected_genes: "metazoa"
+expected_length: null
+inputs:
+  reads: []
+  read_type: "ont-hq"
+  contigs: "/path/to/xgXerMont_mitogenome_candidate.fa"
+  contig_names: []
+  flye_info: null
+  bait: null
+  taxid: null
+  ncbi_email: null
+candidates:
+  require_circular: true
+  max_copies: 4
+  length_tolerance: 0.25
+  min_bait_cov: 0.3
+fishing:
+  minimap2_preset: "map-ont"
+  min_read_frac: 0.8
+  min_aln: 1000
+  min_identity: 0.7
+  min_len: 1000
+  max_len: 0
+flye:
+  read_flag: "--nano-hq"
+  options: "--meta"
+  polish_iterations: 1
+tandem:
+  resolve: true
+  min_period: 5000
+mitos:
+  refdir: "/path/to/FOAM/utils/refseq_dir"
+  refseq: "refseq81m"
+  runmitos: "auto"
+  options: ""
+  max_overlap: 15
+  max_evalue: 0.01
+  parallel: 2
+threads:
+  fish: 16
+  flye: 16
+  annotate: 4
+keep_intermediate: false

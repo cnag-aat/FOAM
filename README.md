@@ -1,51 +1,248 @@
 # FOAM
-FOAM (Flye ONT Assembly of Mitogenomes). Is a pipeline we have been using to assemble the complete circular mitogenome of different organisms. Although previous versions used a combination of Illumina and ONT reads, due to the increased accuracy of the latest we are only using ONT Q20+ reads. Keep in mind that as each genome and sample poses different challenges is in continuous development.
 
-# Current release
-Version 0.7 is now available. You can look for previous releases using the corresponding tag.
+FOAM (Flye ONT Assembly of Mitogenomes) assembles and finishes complete
+circular mitogenomes from long reads, or finishes a mitogenome candidate that
+an assembler (flye, hifiasm) already produced. Each sample poses its own
+challenges, so FOAM is under continuous development.
 
-# Taxonomic range 
-FOAM has been used to assemble the mitogenomes of several ERGA-BGE species. It has been successful across different taxa including insects, sponges, archnids and vertebrates. Previous versions were used in various genomes, see some the publications below.
+## What it does
 
-# Workflow
-FOAM Snakemake rulegraph summarizing all the steps.
+```
+ mode: reads     pass 1: seed ─▶ candidate reads ─▶ select reads ─▶ flye ─▶ candidates ─▶ annotate* (draft)
+                 pass 2: own draft as bait ─▶ candidate reads ─▶ select reads ─▶ flye ─▶ candidates ─▶ annotate*
+                 ─▶ polish ─▶ annotate* ─▶ final
+ mode: flye      flye contig(s) = bait ─▶ candidate reads ─▶ select reads ─▶ annotate* ─▶ polish ─▶ annotate* ─▶ final
+ mode: hifiasm   hifiasm contig(s) / whole assembly ─▶ candidates ─▶ annotate* ─▶ final   (no reads, no polishing)
 
-![mCriCri2_foam_v05](https://github.com/user-attachments/assets/bab92e6a-a36b-4f98-a62d-25882be2a4fe)
+ annotate* = split tandem copies ─▶ MITOS2 on each unique copy ─▶ repair annotation
+             ─▶ keep the most complete copy ─▶ rotate/reverse-complement to the start gene
+```
 
-# To make it run
-1. Clone this repository.
-2. Download the refseq81 databases from https://zenodo.org/records/2672835
-3. Copy them to your local utils/refseq_dir.
-4. Uncompress the refseq databases locally  (example:  tar jvxf refseq81m.tar.bz2). This will allow you to run mitos stand-alone without using the web interface.
-5. Create config files for your genome. For that (check examples/config forlder config.yamls and also the foam.cnag_cluster.yaml that works for our slurm cluster in example/configs).
-6. Run the pipeline with snakemake pointing to the snakefile in bin.
+### Read fishing
 
-# Config and key parameters
+Fishing is built to depend as little as possible on fixed identity or length
+cut-offs, or on how close a relative's mitogenome is.
 
-  - **Reference Length:** Set the right length for the reference genome used, example reference_length: 15025 for NC_012901 (i.e. Blattella germanica used as reference for Loboptera ibLobCana)
+* **Seed (first pass)**, set by `fishing.seed`:
+  * `bait`: a related mitogenome, given directly or fetched by taxid. FOAM
+    walks up the NCBI taxonomy (species → genus → family → order) and takes
+    up to three complete mitogenomes, preferring RefSeq.
+  * `genes`: conserved mitochondrial proteins (cox1–3, cob, nad1, nad4, nad5)
+    from the MITOS reference set, searched with frameshift-aware
+    `diamond blastx`. No related mitogenome is needed, and gene order and
+    control-region differences don't matter.
+  * `auto` (default): `bait` when a bait or taxid is given, `genes`
+    otherwise.
+* **Candidate reads.** One streaming pass over all reads (`minimap2` against
+  the bait concatenated with itself, or DIAMOND against the seed proteins)
+  keeps any read with ≥ 300 bp of hit. This is deliberately permissive.
+  Only read IDs and the small candidate set are written; the full read set
+  is never rewritten.
+* **Selection by k-mer coverage** (`fishing.method: kmer`, the default).
+  Within the candidate set, mitogenome k-mers occur hundreds to thousands of
+  times; the nuclear flanks of a NUMT read and sequencing errors occur only a
+  few times. FOAM:
+  1. finds the mitochondrial coverage peak in the k-mer abundance spectrum;
+  2. scores each read by the fraction of its k-mers at mitochondrial
+     coverage;
+  3. keeps reads scoring at least half of a typical mito read.
 
-  - **Genetic Code:** Chose the appropriate genetic code: 2 for Vertebrate 5 for Invertebrate (check code in Genetic_Code_Mitos.txt placed in the utils/ folder)
-  - **Mapping and Assembly** As v0.5 expects ONT Q20+ reads or hifi reads, it will no longer use Illumina data for polishing. Therefore mapping and assembly options below are adapted to long reads of high accuracy. These values should work for most species:
+  Both cut-offs are relative to the data, so they adapt to read accuracy and
+  bait divergence, and NUMT-carrying reads are rejected by coverage rather
+  than by an identity threshold.
 
-	parameters:
-		max_read_length: 18000
-		ontfilter_minmatch: 5000
-		ontfilter_minq: 15
-		minimap2_opts: " -ax map-hifi"
-		flye_opts: " --meta --scaffold -i 1"
-		flye_reads: " --nano-hq"
-		polishing_flye: "-i 1"
-                mito_length_variation: 2000
-                tolid: ibLobCana
+  Counting uses [FastK](https://github.com/thegenemyers/FASTK) (in the
+  `mapping` env): every k-mer is counted, and each read's count profile is
+  read back with `Profex`, in parallel over read ranges. 300 Mb of
+  candidate reads takes about 12 s on 4 threads. Without FastK on PATH (or
+  with `fishing.kmer.backend: python`), a pure-Python counter samples
+  1/8 of the k-mers instead; it is about 8× slower even so. `results/pass*/read_selection.json` reports
+  the spectrum, the peak and the thresholds. `fishing.method: alignment`
+  restores the old behaviour: keep reads ≥ 80 % covered by bait alignments.
+* **Second pass, self-baited** (reads mode, `fishing.second_pass: true`).
+  The pass-1 draft, which is the sample's own mitogenome, becomes the bait
+  for a second fishing pass and a fresh flye assembly. Those reads also
+  polish the result. With a near-identical bait the prefilter no longer
+  depends on how divergent the first seed was.
 
-     Key parameters to tweak are _ontfilter_minmatch_ and _ontfilter_minq_: depending on the coverage and divergence to the reference, they could be increased to ensure detection of reads with larger and/or more unique alignments to the reference. Therefore, this can ensure the correct circularization of the contig. For example, we had to run it on mMarFoi with a higher value (i.e. 12,000) to obtain a circular contig of the expected size +- 2,000 bp.
+### Finishing
 
-# Contributors
-Fernando Cruz, Jèssica Gómez-Garrido and Tyler Alioto. Genome Assembly and Annotation Team (CNAG).
+* **Candidates.** Circular contigs (flye `assembly_info.txt`; hifiasm `…c`
+  names) whose length is between 0.75× the expected length and 4 × 1.25× it,
+  to allow for tandem copies. A whole hifiasm assembly can be screened
+  against the bait. Use `contig_names` to pick contigs by hand.
+* **Tandem copies.** Assemblers often output a "circular" contig that is
+  2–3 head-to-tail copies. A `minimap2 -DP` self-alignment (k-mer fallback)
+  gives the period, and an anchor k-mer cuts all copies at the same
+  biological position. Identical copies are annotated once; the copy with
+  the most complete annotation wins.
+* **Annotation repair.** MITOS drops genes its own searches found. FOAM
+  checks the result against the expected gene set and repairs it. Every
+  change is listed in `*.report.json` and as a `Note=` in the GFF3:
+  * rRNAs MITOS discarded for overlapping neighbours (`ignored.mitos`) are
+    restored and trimmed to the neighbouring genes.
+  * Missing proteins are rebuilt as the complete ORF around MITOS's own
+    BLAST hits (`blast/prot`), preferring ATG/ATA starts.
+  * Missing tRNAs are searched for with `cmsearch --max` and the tRNA's
+    covariance model. Hits on other tRNAs/rRNAs, or deep inside proteins,
+    are rejected.
+  * trnL1/L2 and trnS1/S2 are relabelled by their anticodon.
+  * If a tRNA covers a protein's 5′ end by ≥ 20 bp, the start moves to the
+    next in-frame start codon that clears the tRNA.
+  * MITOS's OH/OL predictions are dropped (unreliable outside vertebrates);
+    `mitos.keep_origins: true` keeps them.
+* **Orientation.** Vertebrates start at trnF; all other taxa start at the
+  5′ end of cox1, on the + strand.
+* **Polishing** (reads/flye modes): `flye --polish-target` on the selected
+  copy, rotated by half its length so the poorly polished ends are not at the
+  start gene. The final step re-orients.
 
-Visit our website for more info about the team: https://denovo.cnag.cat/about
+## Taxon presets
 
-# References
-A chromosome-level reference genome for the common octopus, _Octopus vulgaris_ (Cuvier, 1797)
-Dalila Destanović, ProfileDarrin T. Schultz, Ruth Styfhals, Fernando Cruz, Jèssica Gómez-Garrido, Marta Gut, Ivo Gut, Graziano Fiorito, Oleg Simakov, Tyler S. Alioto, Giovanna Ponte, Eve Seuntjens.
-doi: https://doi.org/10.1101/2023.05.16.540928 
+`--taxon` sets the genetic code, the start gene and the expected gene set.
+Any of them can be overridden (`--genetic-code`, `--anchor`, `--expected-genes`).
+
+| preset | code | start | genes |
+|---|---|---|---|
+| vertebrata | 2 | trnF | 37 |
+| mollusca, arthropoda, annelida, nematoda, invertebrate | 5 | cox1 | 37 |
+| echinodermata, platyhelminthes | 9 | cox1 | 37 |
+| tunicata | 13 | cox1 | 37 |
+| cnidaria, porifera | 4 | cox1 | 13 PCG + 2 rRNA + trnM, trnW |
+
+With `--taxid` and `--email`, `create_config.py` picks the preset from the NCBI
+lineage and takes the mitochondrial genetic code from NCBI Taxonomy.
+
+## Running it
+
+FOAM needs Snakemake ≥ 9. Snakemake builds the tool environments itself
+(`--use-conda`, from `envs/`): minimap2, seqkit, DIAMOND and FastK
+(`mapping`), flye (`flye`), and MITOS 2.1.10 with Infernal (`mitos`, Linux
+only). FOAM's own Python code uses only the standard library.
+
+1. Clone this repository and create a driver environment for Snakemake:
+
+   ```bash
+   conda create -n snakemake -c conda-forge -c bioconda \
+       "snakemake>=9" snakemake-executor-plugin-slurm
+   ```
+   Download the MITOS refseq81 databases from
+   https://zenodo.org/records/2672835 into `utils/refseq_dir` and unpack them
+   (`tar jxf refseq81m.tar.bz2`).
+2. Write a config:
+
+   ```bash
+   # a hifiasm candidate (no reads needed)
+   ./create_config.py --mode hifiasm --tolid xgXerMont --taxon mollusca \
+       --contigs xgXerMont_mitogenome_candidate.fa
+
+   # a whole hifiasm assembly, screened with a bait fetched from NCBI
+   ./create_config.py --mode hifiasm --tolid xgXerMont --taxid 1234 --email you@inst.org \
+       --contigs asm.p_ctg.fa --bait related_mt.fa
+
+   # flye circular contig(s) + reads (polished)
+   ./create_config.py --mode flye --tolid ibLobCana --taxon arthropoda \
+       --contigs flye/assembly.fasta --flye-info flye/assembly_info.txt \
+       --reads reads.ont.fastq.gz --read-type ont-hq
+
+   # from reads only, bait fetched from NCBI
+   ./create_config.py --mode reads --tolid ibLobCana --taxid 6973 --email you@inst.org \
+       --reads reads.ont.fastq.gz --read-type ont-hq --expected-length 15025
+
+   # from reads only, no bait at all (conserved-protein seed)
+   ./create_config.py --mode reads --tolid ibLobCana --taxon arthropoda \
+       --reads reads.ont.fastq.gz --read-type ont-hq
+   ```
+   `mitos.runmitos: auto` (the default) runs `runmitos` (MITOS ≥ 2.1.7) or
+   `runmitos.py` (older), whichever is on PATH; `--runmitos` in
+   `create_config.py` sets another command.
+3. Build the conda environments once, on a node with internet access
+   (compute nodes often have none). `--conda-prefix` shares one copy
+   between runs:
+
+   ```bash
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --use-conda --conda-prefix ~/foam-conda-envs --conda-create-envs-only
+   ```
+4. Run, locally or on SLURM with one of the example profiles:
+
+   ```bash
+   # locally / inside one job
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --use-conda --conda-prefix ~/foam-conda-envs -j 16
+
+   # SLURM (CNAG partitions all / research / research_long)
+   snakemake -s /path/to/FOAM/bin/foam.smk --configfile xgXerMont.foam.yaml \
+       --conda-prefix ~/foam-conda-envs --profile /path/to/FOAM/examples/profiles/sm9-slurm-cnag
+   ```
+
+   | profile | partitions |
+   |---|---|
+   | `sm9-slurm-cnag` | each rule on `all` (≤ 1 h), `research` (≤ 12 h) or `research_long` with a fitting runtime |
+   | `sm9-slurm-sp_gpus` | every job on `sp_gpus`, no time limit (no GPUs requested) |
+
+   With Snakemake ≥ 9 the `snakemake` process is the master: it stays
+   alive for the whole run, submitting each job once its inputs exist. Run
+   it on the login node inside `tmux`/`screen`, or as a small long job with
+   `examples/foam-master.sbatch` (submit it from the run directory with the
+   driver environment active; re-submitting resumes the run):
+
+   ```bash
+   export FOAM=/path/to/FOAM FOAM_CONDA_PREFIX=~/foam-conda-envs
+   sbatch $FOAM/examples/foam-master.sbatch xgXerMont.foam.yaml              # sm9-slurm-cnag, research_long
+   sbatch -p sp_gpus $FOAM/examples/foam-master.sbatch xgXerMont.foam.yaml sm9-slurm-sp_gpus
+   ```
+
+   Both profiles set memory per rule and the account `sa_assembly`; override any of
+   it with `--set-resources rule:key=value`. In a profile, partition names
+   are written `"'all'"`: Snakemake evaluates resource values as Python, and
+   a bare `all` is Python's `all()` function.
+
+Outputs go to `results/final/<tolid>_MT.{fa,gff3,bed,genes.tsv,report.json}`;
+each step logs to `logs/<rule>.log`. Intermediate files are deleted unless
+`keep_intermediate: true`.
+
+The steps can also be run by hand, e.g. to (re)annotate a candidate:
+
+```bash
+bin/foam.py annotate -i candidate.fa -o out/sp_MT --taxon mollusca \
+    --refdir utils/refseq_dir --refseq refseq81m
+```
+
+`bin/foam.py --help` lists all subcommands (`annotate`, `split-copies`,
+`candidates`, `fish-filter`, `kmer-select`, `seed-proteins`, `double-bait`,
+`rotate`, `fetch-bait`).
+
+## Tests
+
+```bash
+pip install pytest pyyaml        # snakemake, minimap2 and FastK on PATH enable more tests
+python -m pytest tests
+```
+
+The annotate tests use a fake `runmitos` (`tests/data/fake_runmitos.py`), so
+MITOS is not needed. `foam/` is standard-library-only Python and stays
+compatible with Python 3.6, so it also runs in an older MITOS 2.1.3 environment.
+
+## Possible further improvements
+
+1. **Assembly-graph check.** Use the flye/hifiasm graph (GFA) to confirm
+   circularity and to detect real heteroplasmic/duplicated regions before
+   collapsing tandem copies.
+2. **Polish on a circular target.** Polish a copy extended by a few kb on each
+   side (or a 2-copy dimer) and cut the polished monomer back out with the
+   tandem splitter, so the linearisation point gets full read support.
+3. **Second annotator.** Compare with MitoZ/MitoFinder or a tRNAscan-SE/ARWEN
+   tRNA pass, and report disagreements, for divergent taxa where MITOS2's
+   reference set is thin.
+## Contributors
+
+Fernando Cruz, Jèssica Gómez-Garrido and Tyler Alioto. Genome Assembly and
+Annotation Team (CNAG). https://denovo.cnag.cat/about
+
+## References
+
+A chromosome-level reference genome for the common octopus, *Octopus vulgaris*
+(Cuvier, 1797). Destanović D, Schultz DT, Styfhals R, Cruz F, Gómez-Garrido J,
+Gut M, Gut I, Fiorito G, Simakov O, Alioto TS, Ponte G, Seuntjens E.
+https://doi.org/10.1101/2023.05.16.540928
