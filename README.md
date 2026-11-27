@@ -181,7 +181,19 @@ only). FOAM's own Python code uses only the standard library.
    | `sm9-slurm-cnag` | each rule on `all` (≤ 1 h), `research` (≤ 12 h) or `research_long` with a fitting runtime |
    | `sm9-slurm-sp_gpus` | every job on `sp_gpus`, no time limit (no GPUs requested) |
 
-   Both set memory per rule and the account `sa_assembly`; override any of
+   With Snakemake ≥ 9 the `snakemake` process is the master: it stays
+   alive for the whole run, submitting each job once its inputs exist. Run
+   it on the login node inside `tmux`/`screen`, or as a small long job with
+   `examples/foam-master.sbatch` (submit it from the run directory with the
+   driver environment active; re-submitting resumes the run):
+
+   ```bash
+   export FOAM=/path/to/FOAM FOAM_CONDA_PREFIX=~/foam-conda-envs
+   sbatch $FOAM/examples/foam-master.sbatch xgXerMont.foam.yaml              # sm9-slurm-cnag, research_long
+   sbatch -p sp_gpus $FOAM/examples/foam-master.sbatch xgXerMont.foam.yaml sm9-slurm-sp_gpus
+   ```
+
+   Both profiles set memory per rule and the account `sa_assembly`; override any of
    it with `--set-resources rule:key=value`. In a profile, partition names
    are written `"'all'"`: Snakemake evaluates resource values as Python, and
    a bare `all` is Python's `all()` function.

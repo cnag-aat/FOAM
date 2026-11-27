@@ -170,3 +170,34 @@ def test_sp_gpus_profile(root):
     assert _unquote(d["slurm_partition"]) == "sp_gpus" and "runtime" not in d
     for res in p["set-resources"].values():
         assert "slurm_partition" not in res and "runtime" not in res
+
+
+MASTER = ("examples", "foam-master.sbatch")
+
+
+def _master(root, tmp_path, *args, env=None):
+    e = dict(os.environ, **(env or {}))
+    return subprocess.run(["bash", os.path.join(root, *MASTER)] + list(args), cwd=str(tmp_path),
+                          env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          universal_newlines=True)
+
+
+def test_master_sbatch(root, tmp_path):
+    (tmp_path / "c.yaml").write_text("x: 1\n")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    sm = fake / "snakemake"
+    sm.write_text('#!/bin/sh\necho "ARGS: $*"\n')
+    sm.chmod(0o755)
+    env = {"FOAM": root, "PATH": "%s:%s" % (fake, os.environ["PATH"]), "FOAM_CONDA_PREFIX": "/envs"}
+    r = _master(root, tmp_path, "c.yaml", "sm9-slurm-sp_gpus", "-n", env=env)
+    assert r.returncode == 0, r.stdout
+    args = [l for l in r.stdout.splitlines() if l.startswith("ARGS:")][0]
+    assert "--configfile c.yaml" in args and "--conda-prefix /envs" in args and args.endswith(" -n")
+    assert os.path.join("profiles", "sm9-slurm-sp_gpus") in args
+    r = _master(root, tmp_path, "c.yaml", env=env)                       # default profile
+    assert r.returncode == 0 and "sm9-slurm-cnag" in r.stdout, r.stdout
+    assert _master(root, tmp_path, "c.yaml", "nope", env=env).returncode != 0
+    assert _master(root, tmp_path, "missing.yaml", env=env).returncode != 0
+    with open(os.path.join(root, *MASTER)) as fh:
+        assert "#SBATCH --partition=research_long" in fh.read()
